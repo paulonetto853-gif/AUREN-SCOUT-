@@ -1,0 +1,61 @@
+import argparse
+import json
+import logging
+import os
+
+from playwright.sync_api import Error as PlaywrightError
+
+from scout.api import create_server
+from scout.browser_controller import BrowserController
+from scout.discovery import MockSearchProvider
+from scout.service import ScoutService
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="auren-scout")
+    commands = parser.add_subparsers(dest="command")
+    serve = commands.add_parser("serve", help="iniciar a API HTTP")
+    serve.add_argument("--host", default=os.getenv("SCOUT_HOST", "127.0.0.1"))
+    serve.add_argument("--port", type=int, default=int(os.getenv("SCOUT_PORT", "8080")))
+    commands.add_parser("browser-status", help="consultar o estado do Edge conectado por CDP")
+    navigate = commands.add_parser("browser-navigate", help="navegar a aba ativa para uma URL autorizada")
+    navigate.add_argument("url")
+    args = parser.parse_args()
+
+    if args.command is None:
+        args.command = "serve"
+        args.host = os.getenv("SCOUT_HOST", "127.0.0.1")
+        args.port = int(os.getenv("SCOUT_PORT", "8080"))
+
+    logging.basicConfig(level=os.getenv("SCOUT_LOG_LEVEL", "INFO").upper(),
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    if args.command in {"browser-status", "browser-navigate"}:
+        controller = BrowserController()
+        try:
+            controller.connect()
+            result = controller.getStatus() if args.command == "browser-status" else controller.navigate(args.url)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        except (PlaywrightError, RuntimeError, ValueError) as error:
+            parser.error(str(error))
+        finally:
+            controller.disconnect()
+        return
+
+    provider = os.getenv("SCOUT_PROVIDER", "mock").casefold()
+    if provider != "mock":
+        parser.error("somente SCOUT_PROVIDER=mock está disponível nesta versão")
+    if args.host != "127.0.0.1":
+        parser.error("a API só pode escutar em 127.0.0.1")
+    try:
+        server = create_server(ScoutService(MockSearchProvider()), args.host, args.port)
+    except ValueError as error:
+        parser.error(str(error))
+    logging.getLogger("scout").info("API Scout disponível em http://%s:%s", *server.server_address)
+    logging.getLogger("scout").info("Auren Scout operacional. Health check: http://127.0.0.1:%s/health",
+                                    server.server_address[1])
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logging.getLogger("scout").info("Encerrando API Scout")
+    finally:
+        server.server_close()
