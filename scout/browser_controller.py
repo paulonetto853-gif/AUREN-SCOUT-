@@ -91,9 +91,13 @@ class BrowserController:
         return [self._tab_info(page) for page in self._pages()]
 
     def getActiveTab(self) -> dict[str, str] | None:
+        page = self.getActivePage()
+        return self._tab_info(page) if page is not None else None
+
+    def getActivePage(self) -> Page | None:
         for page in self._pages():
             if page.evaluate("document.visibilityState === 'visible' && document.hasFocus()"):
-                return self._tab_info(page)
+                return page
         return None
 
     def getStatus(self) -> dict:
@@ -129,8 +133,4 @@ class BrowserController:
         return page.screenshot() if page is not None else None
 
     def _active_page(self) -> Page | None:
-        return next(
-            (page for page in self._pages()
-             if page.evaluate("document.visibilityState === 'visible' && document.hasFocus()")),
-            None,
-        )
+        return self.getActivePage()

@@ -98,6 +98,18 @@ O comando que controla o Edge precisa rodar no mesmo Windows do navegador. Um te
 
 O script não cria túneis, não altera firewall e não autentica no AIVIO. O endpoint CDP dá controle elevado sobre a instância do navegador: mantenha-o vinculado ao loopback, não encaminhe a porta e não o exponha à rede/internet. Se a porta estiver ocupada ou o Edge não puder ser localizado pelo registro, o script para com erro em vez de escolher outro executável ou iniciar outro navegador.
 
+## Integração AIVIO (V2)
+
+Com Edge já aberto no perfil dedicado, login feito manualmente e a página AIVIO visível na aba ativa, a integração pode ser exercitada durante desenvolvimento:
+
+```powershell
+python -m scout.aivio "Porto Alegre"
+```
+
+Ela usa exclusivamente `http://127.0.0.1:9222`; não abre o AIVIO nem tenta autenticar. Os controles são encontrados por rótulos/atributos semânticos de cidade e pelo texto do botão `Ver agora`. O resultado estruturado contém a cidade, título/texto/link dos cards ou links visíveis encontrados e, somente com `--open-first-company`, título, URL, texto visível e links internos da primeira página de empresa. A navegação de perfil só aceita links HTTP(S) da mesma origem da página AIVIO.
+
+Como ainda não há contrato DOM/URL do AIVIO no projeto, a leitura é baseada em heurísticas genéricas de acessibilidade e estrutura HTML; confirme os seletores contra a página real. Não há filtro por site, nota ou avaliações.
+
 ## Configuração
 
 | Variável | Padrão | Descrição |
@@ -169,6 +181,16 @@ python3 -m unittest discover -s tests -v
 Os testes unitários simulam o transporte CDP e não exigem Edge ativo. Para verificar uma instância Edge real já aberta e autorizada pelo usuário, execute `SCOUT_CDP_ENDPOINT=http://127.0.0.1:9222 python3 -m scout browser-status`; o resultado deve conter `"connected": true`, `"browser": "Microsoft Edge"`, `tabs` com título/URL e `activeTab`. Não tente autenticar nem abrir sites automaticamente.
 
 O teste de empacotamento executa quando PyInstaller está instalado (`python3 -m pip install -r requirements-build.txt`); no Windows, ele verifica que o artefato `.exe` é gerado.
+
+Os testes mockados da integração AIVIO rodam na mesma suíte. O teste real, que preenche a cidade e clica para pesquisar, é opt-in e requer uma sessão AIVIO já aberta e autenticada manualmente no Edge local:
+
+```powershell
+$env:AIVIO_LIVE_TEST = "1"
+$env:AIVIO_TEST_CITY = "Porto Alegre"
+python -m unittest discover -s tests -p "test_aivio_live.py" -v
+```
+
+Acrescente `$env:AIVIO_OPEN_FIRST_COMPANY = "1"` para autorizar explicitamente a abertura do primeiro perfil encontrado.
 
 O teste de integração real executa o mesmo fluxo e fica ignorado quando `SCOUT_CDP_ENDPOINT` não está configurado:
 
