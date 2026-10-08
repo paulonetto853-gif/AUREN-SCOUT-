@@ -86,6 +86,33 @@ class CliTests(unittest.TestCase):
 
         controller.assert_not_called()
 
+    def test_browser_inspect_prints_valid_json_without_interaction(self):
+        inspection = {
+            "connected": True,
+            "title": "AIVIO Dashboard",
+            "url": "https://aivio.example/dashboard",
+            "text": "Página atual",
+            "inputs": [],
+            "buttons": [],
+            "links": [],
+        }
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-inspect"]),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("builtins.print") as print_output,
+        ):
+            controller.return_value.inspectPage.return_value = inspection
+            main()
+
+        output = json.loads(print_output.call_args.args[0])
+        self.assertEqual(output, inspection)
+        controller.assert_called_once_with(cdp_endpoint=CDP_ENDPOINT)
+        controller.return_value.connect.assert_called_once_with()
+        controller.return_value.inspectPage.assert_called_once_with()
+        controller.return_value.disconnect.assert_called_once_with()
+        controller.return_value.navigate.assert_not_called()
+
     def test_task_command_executes_and_prints_standardized_result(self):
         result = TaskResult(
             task_id="12345678-1234-5678-1234-567812345678",

@@ -71,6 +71,14 @@ python3 -m scout browser-navigate https://example.com/
 
 O comando de status retorna conexão, navegador, abas com título/URL e aba ativa em JSON. Navegação aceita somente URLs HTTP(S) sem credenciais; nenhuma URL é aberta automaticamente. Não exponha o endpoint CDP a redes não confiáveis.
 
+Para diagnosticar somente a página atualmente ativa da V2, sem clique, preenchimento ou navegação:
+
+```powershell
+.\dist\AurenScout-V2.exe browser-inspect
+```
+
+O comando retorna JSON com título, URL, texto visível (limitado a 12.000 caracteres), inputs visíveis não ocultos/não password, botões e links. Valores de campos identificados como sensíveis não são incluídos, e query strings/fragments de URLs são removidos.
+
 ## Execução local no Windows
 
 O comando que controla o Edge precisa rodar no mesmo Windows do navegador. Um terminal do GitHub Codespaces, WSL ou outro container não compartilha o `127.0.0.1` do Windows; execute estes passos em um PowerShell local, dentro de uma cópia do repositório clonada no Windows.

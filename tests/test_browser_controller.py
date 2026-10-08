@@ -2,7 +2,12 @@ import json
 import unittest
 from unittest.mock import patch
 
-from scout.browser_controller import BrowserController, V1_CDP_ENDPOINT, V2_CDP_ENDPOINT
+from scout.browser_controller import (
+    INSPECT_PAGE_SCRIPT,
+    BrowserController,
+    V1_CDP_ENDPOINT,
+    V2_CDP_ENDPOINT,
+)
 
 
 class FakePage:
@@ -11,6 +16,8 @@ class FakePage:
         self.url = url
         self.active = active
         self.navigated_to = None
+        self.clicked = False
+        self.filled = False
 
     def is_closed(self):
         return False
@@ -19,6 +26,22 @@ class FakePage:
         return self._title
 
     def evaluate(self, expression):
+        if expression == INSPECT_PAGE_SCRIPT:
+            return {
+                "title": self._title,
+                "url": f"{self.url}?access_token=do-not-return#private",
+                "text": "Página atual do AIVIO",
+                "inputs": [
+                    {"tag": "input", "type": "text", "name": "city", "placeholder": "Cidade",
+                     "aria_label": "Cidade", "value": "Porto Alegre"},
+                    {"tag": "input", "type": "password", "name": "password", "placeholder": "",
+                     "aria_label": "", "value": "do-not-return"},
+                    {"tag": "input", "type": "text", "name": "api_token", "placeholder": "",
+                     "aria_label": "", "value": "do-not-return"},
+                ],
+                "buttons": [{"text": "Buscar", "aria_label": "", "type": "submit"}],
+                "links": [{"text": "Ajuda", "href": "https://aivio.example/help"}],
+            }
         self.asserted_expression = expression
         return self.active
 
@@ -189,6 +212,35 @@ class BrowserControllerTests(unittest.TestCase):
             "url": "https://aivio.example/home",
         })
         self.assertEqual(self.controller.screenshot(), b"image")
+
+    def test_inspect_page_reads_dom_without_interacting(self):
+        self.connect()
+
+        result = self.controller.inspectPage()
+
+        self.assertTrue(result["connected"])
+        self.assertEqual(result["title"], "AIVIO - Painel")
+        self.assertEqual(result["url"], "https://aivio.example/home")
+        self.assertEqual(result["text"], "Página atual do AIVIO")
+        self.assertEqual(result["inputs"], [{
+            "tag": "input", "type": "text", "name": "city", "placeholder": "Cidade",
+            "aria_label": "Cidade", "value": "Porto Alegre",
+        }, {
+            "tag": "input", "type": "text", "name": "api_token", "placeholder": "",
+            "aria_label": "", "value": None,
+        }])
+        self.assertEqual(result["buttons"], [{"text": "Buscar", "aria_label": "", "type": "submit"}])
+        self.assertEqual(result["links"], [{"text": "Ajuda", "href": "https://aivio.example/help"}])
+        self.assertNotIn("access_token", result["url"])
+        self.assertNotIn("private", result["url"])
+        self.assertFalse(self.active_page.clicked)
+        self.assertFalse(self.active_page.filled)
+        self.assertIsNone(self.active_page.navigated_to)
+
+    def test_inspection_script_excludes_password_values_and_redacts_sensitive_urls(self):
+        self.assertIn("element.type.toLowerCase() === 'password'", INSPECT_PAGE_SCRIPT)
+        self.assertIn("url.search = ''", INSPECT_PAGE_SCRIPT)
+        self.assertIn("url.hash = ''", INSPECT_PAGE_SCRIPT)
 
 
 if __name__ == "__main__":

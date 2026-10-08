@@ -1,6 +1,7 @@
 import logging
 import os
-from urllib.parse import urlsplit
+import re
+from urllib.parse import urlsplit, urlunsplit
 
 from playwright.sync_api import Browser, Page, Playwright, sync_playwright
 
@@ -9,6 +10,82 @@ logger = logging.getLogger("scout.browser")
 V1_CDP_ENDPOINT = "http://127.0.0.1:9222"
 V2_CDP_ENDPOINT = "http://127.0.0.1:9223"
 _ALLOWED_CDP_PORTS = {9222, 9223}
+INSPECT_PAGE_SCRIPT = """() => {
+  const visible = element => {
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 &&
+      style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const safeValue = element => {
+    const descriptor = [
+      element.name,
+      element.id,
+      element.getAttribute('autocomplete'),
+      element.getAttribute('aria-label'),
+      element.getAttribute('placeholder')
+    ].filter(Boolean).join(' ').toLowerCase();
+    const sensitive = /password|token|cookie|csrf|auth|secret|credential|session/;
+    if (sensitive.test(descriptor)) return null;
+    return 'value' in element ? element.value : null;
+  };
+  const root = document.querySelector('main,[role="main"]') || document.body;
+  const text = (root && root.innerText || '').trim();
+  const safeHref = href => {
+    try {
+      const url = new URL(href, document.baseURI);
+      url.search = '';
+      url.hash = '';
+      return url.href;
+    } catch {
+      return '';
+    }
+  };
+  return {
+    title: document.title,
+    url: (() => {
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.hash = '';
+      return url.href;
+    })(),
+    text: text.slice(0, 12000),
+    inputs: Array.from(document.querySelectorAll('input,textarea,select'))
+      .filter(element => visible(element) &&
+        !(element instanceof HTMLInputElement && element.type.toLowerCase() === 'password') &&
+        !(element instanceof HTMLInputElement && element.type.toLowerCase() === 'hidden'))
+      .map(element => ({
+        tag: element.tagName.toLowerCase(),
+        type: element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase(),
+        name: element.getAttribute('name') || '',
+        placeholder: element.getAttribute('placeholder') || '',
+        aria_label: element.getAttribute('aria-label') || '',
+        value: safeValue(element)
+      })),
+    buttons: Array.from(document.querySelectorAll('button,[role="button"]'))
+      .filter(visible)
+      .map(element => ({
+        text: (element.innerText || element.textContent || '').trim(),
+        aria_label: element.getAttribute('aria-label') || '',
+        type: element.getAttribute('type') || ''
+      })),
+    links: Array.from(document.querySelectorAll('a[href]'))
+      .filter(visible)
+      .map(element => ({
+        text: (element.innerText || element.textContent || '').trim(),
+        href: safeHref(element.href)
+      }))
+  };
+}"""
+
+_SENSITIVE_TEXT_PATTERNS = (
+    re.compile(r"(?i)bearer\s+[a-z0-9._~+/=-]+"),
+    re.compile(r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b"),
+)
+_SENSITIVE_FIELD_PATTERN = re.compile(
+    r"password|token|cookie|csrf|auth|secret|credential|session",
+    re.IGNORECASE,
+)
 
 
 def _validate_http_url(url: str) -> None:
@@ -148,6 +225,48 @@ class BrowserController:
     def readPageInfo(self) -> dict[str, str] | None:
         page = self._active_page()
         return self._tab_info(page) if page is not None else None
+
+    def inspectPage(self) -> dict:
+        browser = self._require_browser()
+        page = self.getActivePage()
+        if page is None:
+            raise RuntimeError("Não há uma aba ativa disponível para inspecionar")
+        inspection = page.evaluate(INSPECT_PAGE_SCRIPT)
+        if not isinstance(inspection, dict):
+            raise RuntimeError("A inspeção da página retornou um formato inválido")
+        url = inspection.get("url")
+        if isinstance(url, str):
+            parts = urlsplit(url)
+            inspection["url"] = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        text = inspection.get("text")
+        if isinstance(text, str):
+            for pattern in _SENSITIVE_TEXT_PATTERNS:
+                text = pattern.sub("[REDACTED]", text)
+            inspection["text"] = text[:12_000]
+        inputs = inspection.get("inputs")
+        if isinstance(inputs, list):
+            safe_inputs = []
+            for item in inputs:
+                if not isinstance(item, dict):
+                    continue
+                field_type = item.get("type", "")
+                if isinstance(field_type, str) and field_type.casefold() in {"password", "hidden"}:
+                    continue
+                descriptor = " ".join(
+                    str(item.get(key, "")) for key in ("name", "placeholder", "aria_label")
+                )
+                safe_value = None if _SENSITIVE_FIELD_PATTERN.search(descriptor) else item.get("value")
+                safe_inputs.append({
+                    "tag": item.get("tag", ""),
+                    "type": field_type,
+                    "name": item.get("name", ""),
+                    "placeholder": item.get("placeholder", ""),
+                    "aria_label": item.get("aria_label", ""),
+                    "value": safe_value,
+                })
+            inspection["inputs"] = safe_inputs
+        inspection["connected"] = browser.is_connected()
+        return inspection
 
     def screenshot(self) -> bytes | None:
         page = self._active_page()
