@@ -15,7 +15,7 @@ class FakePage:
 
 
 class FakeBrowserController:
-    def __init__(self, *, suggestions=None, buttons=None, pages=None):
+    def __init__(self, *, suggestions=None, buttons=None, pages=None, category_options=None):
         self.page = FakePage()
         self.cdp_endpoint = "http://127.0.0.1:9223"
         self.suggestions = suggestions if suggestions is not None else [
@@ -44,6 +44,16 @@ class FakeBrowserController:
         self.links = []
         self.fail_wait = False
         self.selected_city = None
+        self.category_options = category_options if category_options is not None else [
+            "Restaurantes, padarias e lanchonetes",
+            "Bares e casas noturnas",
+            "Salões de beleza e manicure",
+            "Barbearias",
+            "Clínicas de estética e massagem",
+            "restaurantes",
+        ]
+        self.category_menu_open = False
+        self.selected_category = "Escolha o ramo"
 
     def getActivePage(self):
         return self.page
@@ -96,13 +106,24 @@ class FakeBrowserController:
         self.typed_city = value
         return {"filled": True, "value_changed": True}
 
-    def wait_for_element(self, *, text, timeout_ms):
-        self.operations.append(("wait_for_element", text, timeout_ms))
+    def wait_for_element(self, *, text=None, role=None, accessible_name=None, timeout_ms):
+        text = accessible_name or text
+        self.operations.append(("wait_for_element", role, text, timeout_ms))
         matches = [suggestion for suggestion in self.suggestions if suggestion == text]
-        if not matches:
+        if matches:
+            if len(matches) > 1:
+                raise ValueError(f"Alvo ambíguo para sugestão {text}")
+            return True
+        if role is None:
             raise TimeoutError(f"Sugestão exata não apareceu: {text}")
-        if len(matches) > 1:
-            raise ValueError(f"Alvo ambíguo para sugestão {text}")
+        options = [
+            option for option in self.category_options
+            if option == text
+        ] if self.category_menu_open and role == "option" else []
+        if not options:
+            raise TimeoutError(f"Opção visível não apareceu: {text}")
+        if len(options) > 1:
+            raise ValueError(f"Opção ambígua: {text}")
         return True
 
     def click_text(self, text):
@@ -117,10 +138,20 @@ class FakeBrowserController:
 
     def open_dropdown(self, trigger, **target):
         self.operations.append(("open_dropdown", trigger, target))
+        self.category_menu_open = True
         return {"opened": True, "kind": "custom"}
 
     def select_option(self, value):
         self.operations.append(("select_option", value))
+        matches = [option for option in self.category_options if option == value]
+        if not matches:
+            raise RuntimeError(f"Opção inexistente: {value}")
+        if len(matches) > 1:
+            raise ValueError(f"Opção ambígua: {value}")
+        if not self.category_menu_open:
+            raise RuntimeError("O dropdown não está aberto")
+        self.selected_category = matches[0]
+        self.category_menu_open = False
         return {"selected": True, "value_changed": True}
 
     def capture_page_state(self):
@@ -196,11 +227,13 @@ class AivioIntegrationTests(unittest.TestCase):
             ("fill", "Porto Alegre", {"placeholder": "Digite uma cidade..."}),
             self.controller.operations,
         )
-        self.assertIn(("wait_for_element", "Porto Alegre", 5_000), self.controller.operations)
+        self.assertIn(("wait_for_element", None, "Porto Alegre", 5_000), self.controller.operations)
         self.assertIn(("click_text", "Porto Alegre"), self.controller.operations)
         self.assertEqual(self.controller.selected_city, "Porto Alegre")
         self.assertIn(("open_dropdown", "Escolha o ramo", {}), self.controller.operations)
+        self.assertIn(("wait_for_element", "option", "restaurantes", 5_000), self.controller.operations)
         self.assertIn(("select_option", "restaurantes"), self.controller.operations)
+        self.assertEqual(self.controller.selected_category, "restaurantes")
         self.assertIn(("click_button", "Buscar"), self.controller.operations)
         operations = [item[0] for item in self.controller.operations]
         self.assertLess(operations.index("click_element"), operations.index("fill"))
@@ -229,7 +262,7 @@ class AivioIntegrationTests(unittest.TestCase):
                     ("fill", city, {"placeholder": "Digite uma cidade..."}),
                     controller.operations,
                 )
-                self.assertIn(("wait_for_element", city, 5_000), controller.operations)
+                self.assertIn(("wait_for_element", None, city, 5_000), controller.operations)
                 self.assertIn(("click_text", city), controller.operations)
                 self.assertEqual(controller.selected_city, city)
 
@@ -263,6 +296,41 @@ class AivioIntegrationTests(unittest.TestCase):
             self.integration.search_leads(
                 "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
             )
+
+    def test_category_dropdown_waits_for_and_selects_requested_visible_option(self):
+        category = "Bares e casas noturnas"
+
+        self.integration._fill_search_fields({
+            "city": "Porto Alegre",
+            "category": category,
+        })
+
+        self.assertEqual(self.controller.selected_category, category)
+        operations = [operation[0] for operation in self.controller.operations]
+        self.assertLess(
+            operations.index("open_dropdown"),
+            operations.index("wait_for_element", operations.index("open_dropdown")),
+        )
+        self.assertLess(
+            operations.index("wait_for_element", operations.index("open_dropdown")),
+            operations.index("select_option"),
+        )
+        self.assertFalse(any(item[0] == "click_button" for item in self.controller.operations))
+
+    def test_category_dropdown_rejects_missing_or_ambiguous_requested_option(self):
+        for options, error in (
+            (["Restaurantes"], "Opção visível não apareceu"),
+            (["Bares e casas noturnas", "Bares e casas noturnas"], "Opção ambígua"),
+        ):
+            with self.subTest(options=options):
+                controller = FakeBrowserController(category_options=options)
+                integration = AivioIntegration(controller)
+                with self.assertRaisesRegex((TimeoutError, ValueError), error):
+                    integration._fill_search_fields({
+                        "city": "Porto Alegre",
+                        "category": "Bares e casas noturnas",
+                    })
+                self.assertFalse(any(item[0] == "click_button" for item in controller.operations))
 
     def test_missing_category_control_fails_before_form_interaction(self):
         self.controller.buttons = [{"text": "Buscar", "disabled": False}]

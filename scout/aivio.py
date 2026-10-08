@@ -278,7 +278,15 @@ class AivioIntegration:
 
         self._select_city(fields["city"])
         self.browser_controller.open_dropdown("Escolha o ramo")
-        self.browser_controller.select_option(fields["category"].strip())
+        category = fields["category"].strip()
+        self.browser_controller.wait_for_element(
+            role="option",
+            accessible_name=category,
+            timeout_ms=5_000,
+        )
+        selection = self.browser_controller.select_option(category)
+        if not selection.get("selected"):
+            raise RuntimeError(f"A categoria não foi confirmada no AIVIO: {category}")
 
     def _select_city(self, city: str) -> None:
         if not isinstance(city, str) or not city.strip():

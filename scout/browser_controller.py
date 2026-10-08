@@ -1090,7 +1090,8 @@ class BrowserController:
             """element => ({
               text: (element.innerText || element.textContent || '').trim(),
               expanded: element.getAttribute('aria-expanded'),
-              value: 'value' in element ? element.value : null
+              value: 'value' in element ? element.value : null,
+              valueText: element.getAttribute('aria-valuetext')
             })"""
         )
         option_strategies = [
@@ -1103,16 +1104,25 @@ class BrowserController:
             """element => ({
               text: (element.innerText || element.textContent || '').trim(),
               expanded: element.getAttribute('aria-expanded'),
-              value: 'value' in element ? element.value : null
+              value: 'value' in element ? element.value : null,
+              valueText: element.getAttribute('aria-valuetext')
             })"""
         )
-        page_changed = self.verify_page_changed(before_page, timeout_ms)
+        expected = " ".join(text.split()).casefold()
+        selected_values = (
+            after_trigger.get("text"),
+            after_trigger.get("value"),
+            after_trigger.get("valueText"),
+        )
+        if not any(
+            isinstance(value, str) and " ".join(value.split()).casefold() == expected
+            for value in selected_values
+        ):
+            raise RuntimeError(f"A seleção da opção não foi confirmada no controle: {text}")
         trigger_changed = before_trigger != after_trigger
-        if not trigger_changed and not page_changed:
-            raise RuntimeError(f"A seleção da opção não produziu uma mudança observável: {text}")
         self._open_dropdown = None
         self._open_dropdown_kind = None
-        return {"selected": True, "value_changed": trigger_changed or page_changed}
+        return {"selected": True, "value_changed": trigger_changed}
 
     def wait_for_element(
         self,

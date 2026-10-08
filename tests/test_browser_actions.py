@@ -146,6 +146,7 @@ class FakeActionLocator:
                 "text": self.text,
                 "expanded": "false" if self.page.dropdown_closed else "true",
                 "value": None,
+                "valueText": self.attributes.get("aria-valuetext"),
             }
         raise AssertionError(f"unexpected locator evaluation: {script}")
 
@@ -438,6 +439,28 @@ class BrowserActionTests(unittest.TestCase):
 
         self.assertEqual(result, {"opened": True, "kind": "custom"})
         self.assertEqual(trigger.click_count, 1)
+
+    def test_custom_dropdown_selection_requires_selected_text_on_trigger(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Escolha o ramo",
+            attributes={"role": "combobox", "aria-expanded": "false"},
+            on_click=lambda: setattr(self.page, "dropdown_closed", False),
+        )
+        option = FakeActionLocator(
+            self.page,
+            text="Restaurantes, padarias e lanchonetes",
+            on_click=lambda: setattr(self.page, "dropdown_closed", True),
+        )
+        self.page.roles[("combobox", "Escolha o ramo")] = trigger
+        self.page.roles[("option", "Restaurantes, padarias e lanchonetes")] = option
+
+        self.controller.open_dropdown("Escolha o ramo")
+        with self.assertRaisesRegex(RuntimeError, "não foi confirmada no controle"):
+            self.controller.select_option("Restaurantes, padarias e lanchonetes")
+
+        self.assertEqual(trigger.text, "Escolha o ramo")
 
     def test_select_option_from_native_select(self):
         select = FakeActionLocator(
