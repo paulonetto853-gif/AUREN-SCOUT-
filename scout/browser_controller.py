@@ -261,6 +261,7 @@ class BrowserController:
         self._browser_version: str | None = None
         self._open_dropdown: Locator | None = None
         self._open_dropdown_kind: str | None = None
+        self._dropdown_initial_state: dict[str, str | int | None] | None = None
         self._active_page_override: Page | None = None
 
     def connect(self, timeout_ms: int = 5_000) -> None:
@@ -1051,20 +1052,43 @@ class BrowserController:
         target = self._resolve_target("dropdown trigger", strategies)
         self._guard_target_action(target)
         tag_name = str(target.evaluate("(element) => element.tagName.toLowerCase()"))
-        target.click(timeout=timeout_ms)
         if tag_name == "select":
+            target.click(timeout=timeout_ms)
             self._open_dropdown = target
             self._open_dropdown_kind = "native"
             return {"opened": True, "kind": "native"}
         self._open_dropdown = target
         self._open_dropdown_kind = "custom"
+        self._dropdown_initial_state = target.evaluate(
+            """element => ({
+              expanded: element.getAttribute('aria-expanded'),
+              state: element.getAttribute('data-state'),
+              controls: element.getAttribute('aria-controls'),
+              owns: element.getAttribute('aria-owns'),
+              childCount: element.childElementCount,
+              text: (element.innerText || element.textContent || '').trim()
+            })"""
+        )
+        try:
+            initial_menu_state = self._read_dropdown_menu()
+            if initial_menu_state.get("ambiguous"):
+                raise ValueError("Mais de um menu de opções está visível antes do clique")
+            if initial_menu_state.get("opened"):
+                return {"opened": True, "kind": "custom"}
+        except (TypeError, ValueError):
+            self._open_dropdown = None
+            self._open_dropdown_kind = None
+            self._dropdown_initial_state = None
+            raise
+        target.click(timeout=timeout_ms)
         return {"opened": True, "kind": "custom"}
 
     def _read_dropdown_menu(self, *, should_scroll: bool = False) -> dict[str, Any]:
         if self._open_dropdown is None or self._open_dropdown_kind != "custom":
             raise RuntimeError("Abra explicitamente um dropdown customizado antes de inspecioná-lo")
         return self._open_dropdown.evaluate(
-            """(trigger, shouldScroll) => {
+            """(trigger, args) => {
+              const {shouldScroll, initialState} = args;
               const visible = element => {
                 const rect = element.getBoundingClientRect();
                 const style = window.getComputedStyle(element);
@@ -1072,11 +1096,14 @@ class BrowserController:
                   style.visibility !== 'hidden' && style.display !== 'none';
               };
               const controlled = (trigger.getAttribute('aria-controls') || '')
+                .concat(' ', trigger.getAttribute('aria-owns') || '')
                 .split(/\\s+/)
                 .filter(Boolean)
                 .map(id => document.getElementById(id))
                 .filter(element => element && visible(element));
-              const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'))
+              const listboxes = Array.from(document.querySelectorAll(
+                '[role="listbox"],[role="menu"]'
+              ))
                 .filter(element => visible(element));
               const contents = Array.from(document.querySelectorAll(
                 '[data-slot="select-content"]'
@@ -1085,14 +1112,25 @@ class BrowserController:
                 ? controlled
                 : listboxes.length ? listboxes : contents;
               const candidates = menus.filter(menu =>
-                menu.matches('[role="listbox"],[data-slot="select-content"]') ||
-                menu.querySelector('[role="option"],[data-slot="select-item"]')
+                menu.matches('[role="listbox"],[role="menu"],[data-slot="select-content"]') ||
+                menu.querySelector('[role="option"],[role="menuitem"],[data-slot="select-item"]')
               );
               if (candidates.length > 1) {
-                return {opened: true, ambiguous: true, options: []};
+                return {opened: true, ambiguous: true, options: [], evidence: 'ambiguous-menus'};
               }
               const menu = candidates[0];
-              if (!menu) return {opened: false, options: []};
+              const expanded = trigger.getAttribute('aria-expanded');
+              const triggerState = trigger.getAttribute('data-state');
+              const triggerNow = {
+                expanded,
+                state: triggerState,
+                controls: trigger.getAttribute('aria-controls'),
+                owns: trigger.getAttribute('aria-owns'),
+                childCount: trigger.childElementCount,
+                text: (trigger.innerText || trigger.textContent || '').trim()
+              };
+              const triggerChanged = Boolean(initialState) && Object.keys(triggerNow)
+                .some(key => triggerNow[key] !== initialState[key]);
               const isVisibleOption = element => {
                 if (!visible(element)) return false;
                 const rect = element.getBoundingClientRect();
@@ -1111,22 +1149,54 @@ class BrowserController:
                 }
                 return true;
               };
-              const optionElements = Array.from(menu.querySelectorAll(
-                '[role="option"],[data-slot="select-item"]'
-              )).filter(isVisibleOption);
+              const optionSelector = '[role="option"],[role="menuitem"],[data-slot="select-item"]';
+              const optionScope = menu || document;
+              const optionElements = Array.from(optionScope.querySelectorAll(optionSelector))
+                .filter(isVisibleOption);
               const options = optionElements.map(option =>
                 (option.innerText || option.textContent || '').trim()
               ).filter(Boolean);
+              const stateOpen = expanded === 'true' ||
+                ['open', 'opened', 'expanded'].includes((triggerState || '').toLowerCase());
+              const opened = Boolean(menu || options.length || stateOpen || triggerChanged);
+              const evidence = menu ? 'visible-menu'
+                : options.length ? 'visible-options'
+                : stateOpen ? 'combobox-expanded'
+                : triggerChanged ? 'combobox-dom-changed' : 'none';
+              if (!opened) {
+                return {
+                  opened: false,
+                  ambiguous: false,
+                  options: [],
+                  evidence,
+                  expanded,
+                  state: triggerState,
+                  trigger_changed: triggerChanged
+                };
+              }
+              if (!menu && !options.length && shouldScroll) {
+                return {
+                  opened: true,
+                  ambiguous: false,
+                  options,
+                  evidence,
+                  expanded,
+                  state: triggerState,
+                  trigger_changed: triggerChanged,
+                  scrollable: false
+                };
+              }
               const scrollable = element => {
                 const style = window.getComputedStyle(element);
                 return element.scrollHeight > element.clientHeight + 1 &&
                   /auto|scroll|overlay|hidden/.test(style.overflowY);
               };
-              const descendants = Array.from(menu.querySelectorAll('*')).reverse();
+              const scrollRoot = menu || optionElements[0]?.parentElement;
+              const descendants = scrollRoot ? Array.from(scrollRoot.querySelectorAll('*')).reverse() : [];
               const nestedScroller = descendants.find(scrollable);
-              let scroller = nestedScroller || (scrollable(menu) ? menu : null);
+              let scroller = nestedScroller || (scrollRoot && scrollable(scrollRoot) ? scrollRoot : null);
               if (!scroller) {
-                for (let parent = menu.parentElement;
+                for (let parent = (menu || optionElements[0])?.parentElement;
                   parent && parent !== document.body && parent !== document.documentElement;
                   parent = parent.parentElement
                 ) {
@@ -1138,7 +1208,16 @@ class BrowserController:
               }
               if (shouldScroll) {
                 if (!scroller) {
-                  return {opened: true, ambiguous: false, scrollable: false};
+                  return {
+                    opened: true,
+                    ambiguous: false,
+                    options,
+                    evidence,
+                    expanded,
+                    state: triggerState,
+                    trigger_changed: triggerChanged,
+                    scrollable: false
+                  };
                 }
                 const before = scroller.scrollTop;
                 const maxScroll = scroller.scrollHeight - scroller.clientHeight;
@@ -1150,6 +1229,8 @@ class BrowserController:
                 return {
                   opened: true,
                   ambiguous: false,
+                  options,
+                  evidence,
                   scrollable: true,
                   scrolled: scroller.scrollTop > before,
                   at_end: scroller.scrollTop >= maxScroll - 1,
@@ -1161,13 +1242,17 @@ class BrowserController:
                 opened: true,
                 ambiguous: false,
                 options,
+                evidence,
+                expanded,
+                state: triggerState,
+                trigger_changed: triggerChanged,
                 scrollable: Boolean(scroller),
                 scrollTop: scroller ? scroller.scrollTop : null,
                 scrollHeight: scroller ? scroller.scrollHeight : null,
                 clientHeight: scroller ? scroller.clientHeight : null
               };
             }""",
-            should_scroll,
+            {"shouldScroll": should_scroll, "initialState": self._dropdown_initial_state},
         )
 
     def wait_for_dropdown_open(self, *, timeout_ms: int = 5_000) -> bool:
@@ -1188,7 +1273,13 @@ class BrowserController:
                 return True
             remaining_ms = int((deadline - time.monotonic()) * 1000)
             if remaining_ms <= 0:
-                raise TimeoutError("O dropdown não abriu dentro do prazo")
+                raise TimeoutError(
+                    "O dropdown não abriu após o clique: "
+                    f"aria-expanded={state.get('expanded')!r}, "
+                    f"data-state={state.get('state')!r}, "
+                    f"evidência={state.get('evidence')!r}, "
+                    f"opções visíveis={len(state.get('options', []))}"
+                )
             page.wait_for_timeout(min(50, remaining_ms))
 
     def read_dropdown_options(self) -> list[str]:
@@ -1319,6 +1410,7 @@ class BrowserController:
         trigger_changed = before_trigger != after_trigger
         self._open_dropdown = None
         self._open_dropdown_kind = None
+        self._dropdown_initial_state = None
         return {"selected": True, "value_changed": trigger_changed}
 
     def read_dropdown_state(self) -> dict[str, str | None]:

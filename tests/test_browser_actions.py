@@ -110,10 +110,20 @@ class FakeActionLocator:
         self.attributes["uploaded_file"] = path
 
     def evaluate(self, script, *args):
-        if "const controlled = (trigger.getAttribute('aria-controls')" in script:
-            if args and args[0]:
+        if script.startswith("(trigger, args) => {"):
+            if args and args[0].get("shouldScroll"):
                 if not self.page.dropdown_menu_state.get("scrollable"):
-                    return self.page.dropdown_menu_state
+                    state = dict(self.page.dropdown_menu_state)
+                    state["options"] = state.get("visible_options", state.get("options", []))
+                    state["opened"] = bool(
+                        state.get("menu_visible")
+                        or state["options"]
+                        or state.get("expanded") == "true"
+                        or state.get("state") in {"open", "opened", "expanded"}
+                    )
+                    state["ambiguous"] = False
+                    state["scrollable"] = False
+                    return state
                 result = self.page.dropdown_scroll_results.pop(0)
                 self.page.dropdown_menu_state.update(result.get("state", {}))
                 if result.get("options") is not None:
@@ -121,7 +131,36 @@ class FakeActionLocator:
                 if result.get("make_option_visible") and self.page.dropdown_option_locator:
                     self.page.dropdown_option_locator.visible = True
                 return {**self.page.dropdown_menu_state, **result["result"]}
-            return self.page.dropdown_menu_state
+            state = dict(self.page.dropdown_menu_state)
+            state["options"] = state.get("visible_options", state.get("options", []))
+            state.setdefault("evidence", "none")
+            state.setdefault("expanded", self.attributes.get("aria-expanded"))
+            state.setdefault("state", self.attributes.get("data-state"))
+            state.setdefault("trigger_changed", False)
+            state["opened"] = bool(
+                state.get("menu_visible")
+                or state["options"]
+                or state["expanded"] == "true"
+                or state["state"] in {"open", "opened", "expanded"}
+                or state.get("trigger_changed")
+            )
+            if state["opened"] and state.get("evidence") == "none":
+                state["evidence"] = (
+                    "visible-options" if state["options"]
+                    else "combobox-expanded" if state["expanded"] == "true"
+                    else "visible-menu" if state.get("menu_visible")
+                    else "combobox-dom-changed"
+                )
+            return state
+        if script.startswith("element => ({") and "childCount:" in script:
+            return {
+                "expanded": self.attributes.get("aria-expanded"),
+                "state": self.attributes.get("data-state"),
+                "controls": self.attributes.get("aria-controls"),
+                "owns": self.attributes.get("aria-owns"),
+                "childCount": self.attributes.get("child_count", 0),
+                "text": self.text,
+            }
         if "tagName.toLowerCase()" in script:
             return "select" if self.kind == "native" else self.tag
         if "Array.from(element.labels" in script:
@@ -500,6 +539,58 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(result, {"opened": True, "kind": "custom"})
         self.assertEqual(trigger.click_count, 1)
 
+    def test_dropdown_open_detection_recognizes_visible_options_after_click(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Categoria previamente selecionada",
+            attributes={"role": "combobox", "data-slot": "select-trigger"},
+            on_click=lambda: self.page.dropdown_menu_state.update({
+                "visible_options": ["Barbearias"],
+                "evidence": "visible-options",
+            }),
+        )
+        selector = (
+            'button[data-slot="select-trigger"],'
+            '[role="button"][data-slot="select-trigger"],'
+            'select[data-slot="select-trigger"],'
+            '[role=\'combobox\'][data-slot="select-trigger"]'
+        )
+        self.page.attributes[selector] = trigger
+
+        self.controller.open_dropdown(
+            role="combobox",
+            data_attributes={"data-slot": "select-trigger"},
+        )
+
+        self.assertTrue(self.controller.wait_for_dropdown_open(timeout_ms=50))
+        self.assertEqual(trigger.click_count, 1)
+        self.assertEqual(self.controller.read_dropdown_options(), ["Barbearias"])
+
+    def test_dropdown_open_timeout_reports_dom_state_diagnostic(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Escolha o ramo",
+            attributes={"role": "combobox", "data-slot": "select-trigger"},
+        )
+        selector = (
+            'button[data-slot="select-trigger"],'
+            '[role="button"][data-slot="select-trigger"],'
+            'select[data-slot="select-trigger"],'
+            '[role=\'combobox\'][data-slot="select-trigger"]'
+        )
+        self.page.attributes[selector] = trigger
+        self.controller.open_dropdown(
+            role="combobox",
+            data_attributes={"data-slot": "select-trigger"},
+        )
+
+        with self.assertRaisesRegex(TimeoutError, "O dropdown não abriu após o clique"):
+            self.controller.wait_for_dropdown_open(timeout_ms=1)
+
+        self.assertEqual(trigger.click_count, 1)
+
     def test_select_dropdown_option_that_is_already_visible(self):
         trigger = FakeActionLocator(
             self.page,
@@ -736,7 +827,7 @@ class BrowserActionTests(unittest.TestCase):
         self.page.texts["Inexistente"] = FakeActionLocator(self.page, visible=False)
         self.controller.open_dropdown("Categoria")
         self.page.dropdown_menu_state.update({
-            "opened": True,
+            "menu_visible": True,
             "options": [],
         })
 
