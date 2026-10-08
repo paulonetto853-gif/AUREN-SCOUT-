@@ -7,7 +7,11 @@ from unittest.mock import patch
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scout.browser_controller import BrowserController
-from scout.browser_operator import BrowserOperator, V2BrowserController
+from scout.browser_operator import (
+    BrowserOperator,
+    BrowserOperatorExecutor,
+    V2BrowserController,
+)
 
 
 class FakeActionLocator:
@@ -297,6 +301,10 @@ class FakeActionPage:
 
     def wait_for_timeout(self, timeout):
         self.waited_for = timeout
+
+    def wait_for_load_state(self, state, timeout):
+        self.loaded_state = state
+        self.load_state_timeout = timeout
 
     def get_by_role(self, role, *, name=None, exact=False):
         if name is None:
@@ -1093,6 +1101,141 @@ class BrowserOperatorTests(unittest.TestCase):
         self.assertTrue(result["operations"][5]["result"]["verified"])
         self.assertEqual(result["evidence"][0]["after"]["title"], "Example app")
         self.assertEqual(result["evidence"][0]["after"]["url"], "https://example.test/profile")
+
+    def test_operator_fills_by_role_and_accessible_name(self):
+        textbox = FakeActionLocator(
+            self.page,
+            tag="input",
+            value="",
+            attributes={"aria-label": "Display name"},
+        )
+        self.page.roles[("textbox", "Display name")] = textbox
+
+        with patch.object(
+            self.controller, "fill_input", wraps=self.controller.fill_input
+        ) as fill_input:
+            result = self.operator.execute({
+                "task_id": str(uuid.uuid4()),
+                "actions": [{
+                    "action": "fill",
+                    "target": {"role": "textbox", "accessible_name": "Display name"},
+                    "value": "Ada",
+                }],
+            })
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(textbox.value, "Ada")
+        self.assertTrue(result["operations"][0]["result"]["filled"])
+        fill_input.assert_called_once_with(
+            "Ada", timeout_ms=5_000, label="Display name"
+        )
+
+    def test_operator_can_resolve_a_unique_role_without_a_name(self):
+        button = FakeActionLocator(self.page, text="Continue")
+        self.page.roles[("button", "Continue")] = button
+
+        result = self.operator.execute({
+            "task_id": str(uuid.uuid4()),
+            "actions": [{"action": "click", "target": {"role": "button"}}],
+        })
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(button.click_count, 1)
+
+    def test_operator_contract_accepts_every_documented_action(self):
+        actions = [
+            {"action": "navigate", "url": "https://example.test"},
+            {"action": "observe"},
+            {"action": "click", "target": {"role": "button", "accessible_name": "Open"}},
+            {"action": "fill", "target": {"label": "Name"}, "value": "Ada"},
+            {"action": "select", "target": {"role": "combobox", "accessible_name": "Region"},
+             "option": "North"},
+            {"action": "press", "key": "Enter"},
+            {"action": "scroll", "delta_y": 400},
+            {"action": "wait", "target": {"role": "status", "text": "Ready"}},
+            {"action": "wait", "load_state": "domcontentloaded"},
+            {"action": "read_text"},
+            {"action": "open_tab", "url": "https://example.test/other"},
+            {"action": "switch_tab", "title": "Example"},
+            {"action": "close_tab"},
+            {"action": "back"},
+            {"action": "forward"},
+            {"action": "reload"},
+            {"action": "verify", "state": "page_changed"},
+        ]
+
+        validated = BrowserOperator.validate_task({
+            "task_id": str(uuid.uuid4()),
+            "actions": actions,
+        })
+
+        self.assertEqual(validated["actions"], actions)
+
+    def test_operator_rejects_invalid_action_fields_before_execution(self):
+        invalid_actions = [
+            {"action": "wait", "load_state": {}},
+            {"action": "press", "key": []},
+            {"action": "scroll", "delta_y": True},
+            {"action": "close_tab", "title": "Example"},
+            {"action": "verify", "text": "Ready", "state": {}},
+            {"action": "observe", "timeout_ms": True},
+        ]
+
+        for action in invalid_actions:
+            with self.subTest(action=action), self.assertRaises(ValueError):
+                BrowserOperator.validate_task({
+                    "task_id": str(uuid.uuid4()),
+                    "actions": [action],
+                })
+
+    def test_operator_waits_for_load_and_closes_an_explicit_tab(self):
+        second_page = FakeActionPage()
+        second_page._title = "Other tab"
+        self.controller._browser.contexts[0].pages.append(second_page)
+        self.controller._active_page_override = self.page
+
+        result = self.operator.execute({
+            "task_id": str(uuid.uuid4()),
+            "actions": [
+                {"action": "wait", "load_state": "load"},
+                {"action": "close_tab"},
+            ],
+        })
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(self.page.loaded_state, "load")
+        self.assertEqual(result["operations"][1]["action"], "close_tab")
+        self.assertTrue(self.page._closed)
+
+    def test_operator_executor_saves_and_reuses_only_explicit_procedures(self):
+        def completed(self, task):
+            return {
+                "task_id": task["task_id"],
+                "status": "completed",
+                "action": None,
+                "result": [{"observed": True}],
+                "evidence": [],
+                "operations": [{"action": action["action"]} for action in task["actions"]],
+            }
+
+        executor = BrowserOperatorExecutor()
+        actions = [{"action": "observe"}]
+        with patch.object(BrowserOperator, "execute", autospec=True, side_effect=completed) as run:
+            saved = executor.execute({
+                "task_id": str(uuid.uuid4()),
+                "actions": actions,
+                "memory": {"save_as": "home-page-check"},
+            })
+            reuse_task = BrowserOperator.validate_task({
+                "task_id": str(uuid.uuid4()),
+                "memory": {"reuse": "home-page-check"},
+            })
+            reused = executor.execute(reuse_task)
+
+        self.assertEqual(saved["memory"], {"saved_as": "home-page-check"})
+        self.assertEqual(reused["memory"], {"reused": "home-page-check"})
+        self.assertEqual(run.call_args_list[1].args[1]["actions"], actions)
+        self.assertEqual(saved["result"], [{"observed": True}])
 
     def test_ambiguous_semantic_target_returns_structured_failure_without_clicking(self):
         class AmbiguousLocator(FakeActionLocator):

@@ -111,7 +111,11 @@ Passe a cidade que deseja diagnosticar em `--city`. O comando conecta ao CDP V2,
 
 O `BrowserController` também oferece primitivas explícitas reutilizáveis para clique simples/duplo, formulários, dropdowns, teclado/clipboard, navegação e abas, rolagem, espera por elemento/texto/URL/mudança, leitura de atributos/tabelas/listas, estado, downloads e upload de arquivo explicitamente solicitado. A resolução prioriza role/nome acessível, texto exato, labels/placeholder e atributos estáveis; alvos visíveis ambíguos falham. Classes CSS não são usadas como prioridade. Interações com pagamentos e WhatsApp são bloqueadas. Os fluxos V2 `SEARCH_LEADS`, `OPEN_COMPANY` e `GENERATE_SITE` usam essas primitivas. A ausência ou ambiguidade de um controle obrigatório falha explicitamente.
 
-Para tarefas operacionais genéricas enviadas pelo AUREN, a API também expõe `POST /operator/tasks` e `GET /operator/tasks/{task_id}`. Esse contrato é separado dos fluxos legados de negócio em `/tasks` e não exige reconhecer ou acessar AIVIO. Cada tarefa contém `task_id` UUID e uma lista ordenada `actions`; ações aceitas incluem `navigate`, `observe`, `click`, `fill`, `select`, `press`, `scroll`, `wait`, `read_text`, `open_tab`, `switch_tab`, `back`, `forward`, `reload` e `verify`. Cada ação aceita somente seus próprios campos e critérios explícitos; o operador não executa código ou comandos recebidos. A resposta inclui status, operações concluídas/falhas e evidências de título, URL segura e estado anterior/posterior; valores preenchidos não são repetidos na resposta. O registro estruturado por ação fornece base para futura memória operacional, mas não persiste/reexecuta fluxos nem aprende decisões por conta própria. A V2 usa uma entrada exclusiva com CDP `127.0.0.1:9223`; a classe compartilhada e os fluxos da V1 permanecem inalterados. Navegação para pagamentos/serviços de comunicação, interação com controles de pagamento/mensagens e `Enter` em controles de submissão são bloqueados.
+Para tarefas operacionais genéricas enviadas pelo AUREN, a API também expõe `POST /operator/tasks` e `GET /operator/tasks/{task_id}`. Esse contrato é separado dos fluxos legados de negócio em `/tasks` e não exige reconhecer ou acessar AIVIO. Cada tarefa contém `task_id` UUID e uma lista ordenada `actions`; ações aceitas incluem `navigate`, `observe`, `click`, `fill`, `select`, `press`, `scroll`, `wait`, `read_text`, `open_tab`, `switch_tab`, `close_tab`, `back`, `forward`, `reload` e `verify`. `wait` pode aguardar um alvo, texto, URL ou estado de carregamento (`load`, `domcontentloaded` ou `networkidle`). Alvos aceitam critérios semânticos como `role`, `accessible_name`, `text`, `aria_label`, `label`, `placeholder`, `name`, `element_id` e `data_attributes`. Cada ação aceita somente seus próprios campos e critérios explícitos; o operador não executa código ou comandos recebidos. A resposta inclui status, operações concluídas/falhas e evidências de título, URL segura e estado anterior/posterior; valores preenchidos não são repetidos na resposta.
+
+A memória operacional é opcional e só registra sequências explicitamente nomeadas pelo AUREN após execução integral bem-sucedida. Por exemplo, acrescente `"memory": {"save_as": "home-page-check"}` a uma tarefa com `actions` para registrá-la, e depois envie uma nova tarefa com `task_id` e `"memory": {"reuse": "home-page-check"}` para solicitar sua execução explícita. A memória fica somente no processo da API, mantém os resultados da execução e se perde quando o processo reinicia; não define objetivos, decide ações ou executa tarefas sozinha.
+
+A V2 usa uma entrada exclusiva com CDP `127.0.0.1:9223`; a classe compartilhada e os fluxos da V1 permanecem inalterados. Navegação para pagamentos/serviços de comunicação, interação com controles de pagamento/mensagens e `Enter` em controles de submissão são bloqueados.
 
 ## Execução local no Windows
 
@@ -132,13 +136,13 @@ O comando que controla o Edge precisa rodar no mesmo Windows do navegador. Um te
 
    Esse script mantém a V1 em `127.0.0.1:9222` e usa `%LOCALAPPDATA%\AurenScout\EdgeProfile`. Não o altere para iniciar a V2.
 
-4. Para iniciar o Edge da V2 (AIVIO), use exclusivamente o script novo:
+4. Para iniciar o Edge da V2, use exclusivamente o script novo:
 
    ```powershell
    .\scripts\start-edge-cdp-v2.ps1
    ```
 
-   O script V2 fixa CDP em `127.0.0.1:9223` e o perfil em `C:\Users\gabriela.pacheco\AppData\Local\AurenScout\EdgeProfile-V2`. Ele não lê, altera ou reutiliza `EdgeProfile`. Faça login manualmente no perfil V2 e mantenha o Edge aberto. Depois, verifique e consulte o Edge V2:
+   O script V2 fixa CDP em `127.0.0.1:9223` e o perfil em `C:\Users\gabriela.pacheco\AppData\Local\AurenScout\EdgeProfile-V2`. Ele não lê, altera ou reutiliza `EdgeProfile`. Se o site de destino exigir autenticação, faça login manualmente no perfil V2 e mantenha o Edge aberto. Depois, verifique e consulte o Edge V2:
 
    ```powershell
    Invoke-RestMethod http://127.0.0.1:9223/json/version | ConvertTo-Json -Depth 4
@@ -160,9 +164,9 @@ O comando que controla o Edge precisa rodar no mesmo Windows do navegador. Um te
 
 O script não cria túneis, não altera firewall e não autentica no AIVIO. O endpoint CDP dá controle elevado sobre a instância do navegador: mantenha-o vinculado ao loopback, não encaminhe a porta e não o exponha à rede/internet. Se a porta estiver ocupada ou o Edge não puder ser localizado pelo registro, o script para com erro em vez de escolher outro executável ou iniciar outro navegador.
 
-## Integração AIVIO (V2)
+## Fluxos legados AIVIO (site de teste da V2)
 
-O V2 recebe tarefas explícitas do AUREN, usa a aba ativa do Edge via CDP local e devolve JSON padronizado. O login no AIVIO continua manual. O V2 não decide quando gerar site nem executa ações comerciais.
+O AIVIO é somente um site de teste para estes fluxos específicos; não é requisito do operador web genérico `/operator/tasks`. Esses fluxos recebem tarefas explícitas do AUREN, usam a aba ativa do Edge via CDP local e devolvem JSON padronizado. O login no AIVIO continua manual. O Scout não decide quando gerar site nem executa ações comerciais.
 
 Antes de executar tarefas, inicie o Edge CDP como descrito acima, abra o AIVIO na aba ativa e faça login manualmente. O campo de localização observado é identificado por `placeholder="Digite uma cidade..."`; o Scout clica nele, preenche a cidade, aguarda a sugestão textual exata e clica nessa sugestão antes de seguir. Não usa o input de ID dinâmico como campo de Estado nem seleciona por posição. A busca estruturada ainda recebe `state` no contrato e o preserva como dado do lead, mas não tenta preencher um controle de Estado não confirmado nem deriva uma UF da cidade sem evidência retornada pelo AIVIO. A categoria observada é o combobox “Escolha o ramo”; a seleção usa a primitiva genérica e falha em ausência/ambiguidade. O botão observado “Buscar” tem compatibilidade com o rótulo legado “Ver agora”. Os nomes e URLs de leads são observações do AIVIO; campos não disponíveis permanecem `null`. A paginação usa controles visíveis com rótulos acessíveis reconhecíveis e interrompe páginas repetidas. A geração usa apenas ações visíveis identificadas por rótulos observáveis e agora requer uma mensagem textual de sucesso observável; apenas um link novo não confirma geração.
 

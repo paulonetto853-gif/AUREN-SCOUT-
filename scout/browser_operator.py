@@ -4,7 +4,9 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
+from copy import deepcopy
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -14,6 +16,7 @@ from scout.browser_controller import (
     BrowserController,
     V2_CDP_ENDPOINT,
 )
+_MEMORY_NAME_PATTERN = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}")
 
 logger = logging.getLogger("scout.browser_operator")
 
@@ -37,10 +40,11 @@ _ACTION_FIELDS = {
     "select": {"target", "option", "timeout_ms"},
     "press": {"key"},
     "scroll": {"target", "delta_x", "delta_y"},
-    "wait": {"target", "text", "url", "timeout_ms"},
+    "wait": {"target", "text", "url", "load_state", "timeout_ms"},
     "read_text": {"target", "max_chars"},
     "open_tab": {"url", "timeout_ms"},
     "switch_tab": {"title", "url"},
+    "close_tab": {"title", "url"},
     "back": {"timeout_ms"},
     "forward": {"timeout_ms"},
     "reload": {"timeout_ms"},
@@ -126,6 +130,73 @@ class V2BrowserController(BrowserController):
         if _PROHIBITED_TARGET_PATTERN.search(descriptor):
             raise ValueError("Interações com pagamentos e mensagens são bloqueadas")
 
+    def _target_strategies(
+        self,
+        *,
+        role: str | None = None,
+        accessible_name: str | None = None,
+        text: str | None = None,
+        aria_label: str | None = None,
+        label: str | None = None,
+        placeholder: str | None = None,
+        name: str | None = None,
+        element_id: str | None = None,
+        data_attributes: dict[str, str] | None = None,
+        tag_name: str | None = None,
+    ) -> list[tuple[str, Any]]:
+        has_other_selector = any((
+            accessible_name,
+            text,
+            aria_label,
+            label,
+            placeholder,
+            name,
+            element_id,
+            data_attributes,
+            tag_name,
+        ))
+        if role and not has_other_selector:
+            page = self.getActivePage()
+            if page is None:
+                raise RuntimeError("Não há uma aba ativa disponível")
+            return [("role", page.get_by_role(role))]
+        if accessible_name and not any((
+            role,
+            text,
+            aria_label,
+            label,
+            placeholder,
+            name,
+            element_id,
+            data_attributes,
+            tag_name,
+        )):
+            page = self.getActivePage()
+            if page is None:
+                raise RuntimeError("Não há uma aba ativa disponível")
+            return [
+                (
+                    "nome acessível",
+                    page.locator(
+                        self._css_attribute_selector("aria-label", accessible_name)
+                    ),
+                ),
+                ("label", page.get_by_label(accessible_name, exact=True)),
+                ("texto", page.get_by_text(accessible_name, exact=True)),
+            ]
+        return super()._target_strategies(
+            role=role,
+            accessible_name=accessible_name,
+            text=text,
+            aria_label=aria_label,
+            label=label,
+            placeholder=placeholder,
+            name=name,
+            element_id=element_id,
+            data_attributes=data_attributes,
+            tag_name=tag_name,
+        )
+
     def _click_explicit_target(self, locator: Any, timeout_ms: int) -> dict[str, bool]:
         self._guard_target_action(locator)
         return super()._click_explicit_target(locator, timeout_ms)
@@ -155,6 +226,54 @@ class V2BrowserController(BrowserController):
                         "Enter em controles de submissão é bloqueado; use um clique explícito"
                     )
         page.keyboard.press(key)
+
+    def fill_semantic_input(
+        self,
+        value: str,
+        *,
+        timeout_ms: int,
+        **target: Any,
+    ) -> dict[str, bool]:
+        self._validate_timeout(timeout_ms)
+        if not isinstance(value, str):
+            raise ValueError("value deve ser texto")
+        locator = self._find_target(**target)
+        tag_name = locator.evaluate("(element) => element.tagName.toLowerCase()")
+        if tag_name not in {"input", "textarea"}:
+            raise ValueError("O alvo identificado não é um campo de texto")
+        if self._is_sensitive_field(locator):
+            raise ValueError("Preenchimento de campos sensíveis está bloqueado")
+        self._guard_target_action(locator)
+        before_value = locator.input_value()
+        locator.fill(value, timeout=timeout_ms)
+        after_value = locator.input_value()
+        if after_value != value:
+            raise RuntimeError("O valor preenchido não foi confirmado pelo controle")
+        return {"filled": True, "value_changed": before_value != after_value}
+
+    def wait_for_semantic_target(self, *, timeout_ms: int, **target: Any) -> bool:
+        self._validate_timeout(timeout_ms)
+        strategies = self._target_strategies(**target)
+        deadline = time.monotonic() + timeout_ms / 1000
+        for _, locator in strategies:
+            remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+            try:
+                locator.first.wait_for(state="visible", timeout=remaining_ms)
+            except PlaywrightTimeoutError:
+                continue
+            self._unique_visible(locator, "elemento aguardado")
+            return True
+        raise PlaywrightTimeoutError(f"Elemento não apareceu em {timeout_ms} ms")
+
+    def wait_for_load_state(self, load_state: str, timeout_ms: int) -> str:
+        if load_state not in {"load", "domcontentloaded", "networkidle"}:
+            raise ValueError("load_state deve ser load, domcontentloaded ou networkidle")
+        self._validate_timeout(timeout_ms)
+        page = self.getActivePage()
+        if page is None:
+            raise RuntimeError("Não há uma aba ativa disponível")
+        page.wait_for_load_state(load_state, timeout=timeout_ms)
+        return load_state
 
     @staticmethod
     def _assert_safe_page_context(page: Any) -> None:
@@ -233,7 +352,7 @@ class BrowserOperator:
     def validate_task(task: Any) -> dict[str, Any]:
         if not isinstance(task, dict):
             raise ValueError("task deve ser um objeto JSON")
-        unsupported = set(task) - {"task_id", "actions"}
+        unsupported = set(task) - {"task_id", "actions", "memory"}
         if unsupported:
             raise ValueError(f"task contém campos não suportados: {', '.join(sorted(unsupported))}")
         task_id = task.get("task_id")
@@ -243,8 +362,26 @@ class BrowserOperator:
             task_id = str(uuid.UUID(task_id))
         except ValueError as error:
             raise ValueError("task_id deve ser um UUID válido") from error
+        memory = task.get("memory")
+        if memory is not None:
+            if (
+                not isinstance(memory, dict)
+                or len(memory) != 1
+                or set(memory) not in ({"save_as"}, {"reuse"})
+            ):
+                raise ValueError("memory deve conter exatamente save_as ou reuse")
+            memory_operation, memory_name = next(iter(memory.items()))
+            if not isinstance(memory_name, str) or not _MEMORY_NAME_PATTERN.fullmatch(memory_name):
+                raise ValueError(
+                    f"memory.{memory_operation} deve ter 1 a 64 caracteres "
+                    "alfanuméricos, ponto, hífen ou sublinhado"
+                )
         actions = task.get("actions")
-        if not isinstance(actions, list) or not actions:
+        if memory and "reuse" in memory:
+            if "actions" in task:
+                raise ValueError("actions não pode ser informado junto com memory.reuse")
+            actions = []
+        elif not isinstance(actions, list) or not actions:
             raise ValueError("actions deve ser uma lista não vazia")
         if len(actions) > 50:
             raise ValueError("actions aceita no máximo 50 operações")
@@ -259,6 +396,16 @@ class BrowserOperator:
                 raise ValueError(
                     f"actions[{index}] contém campos não suportados: {', '.join(sorted(unsupported))}"
                 )
+            timeout = action.get("timeout_ms", 5_000)
+            if (
+                "timeout_ms" in _ACTION_FIELDS[action_name]
+                and (
+                    isinstance(timeout, bool)
+                    or not isinstance(timeout, int)
+                    or timeout < 1
+                )
+            ):
+                raise ValueError(f"actions[{index}].timeout_ms deve ser um inteiro positivo")
             target = action.get("target")
             if target is not None:
                 BrowserOperator._validate_target(target, index)
@@ -266,17 +413,57 @@ class BrowserOperator:
                 raise ValueError(f"actions[{index}].target é obrigatório")
             if action_name == "fill" and not isinstance(action.get("value"), str):
                 raise ValueError(f"actions[{index}].value deve ser texto")
+            if action_name == "read_text" and (
+                isinstance(action.get("max_chars"), bool)
+                or not isinstance(action.get("max_chars", 12_000), int)
+                or action.get("max_chars", 12_000) < 0
+            ):
+                raise ValueError(f"actions[{index}].max_chars deve ser um inteiro não negativo")
             if action_name == "select" and not _nonempty_text(action.get("option")):
                 raise ValueError(f"actions[{index}].option deve ser texto não vazio")
             if action_name in {"navigate", "open_tab"} and not _nonempty_text(action.get("url")):
                 raise ValueError(f"actions[{index}].url deve ser texto não vazio")
             if action_name == "switch_tab":
-                if (action.get("title") is None) == (action.get("url") is None):
+                if (
+                    (action.get("title") is None) == (action.get("url") is None)
+                    or any(
+                        key in action and not _nonempty_text(action[key])
+                        for key in ("title", "url")
+                    )
+                ):
                     raise ValueError(f"actions[{index}] requer exatamente title ou url")
+            if action_name == "close_tab":
+                if (action.get("title") is None) != (action.get("url") is None):
+                    raise ValueError(
+                        f"actions[{index}] requer title e url juntos ou ambos omitidos"
+                    )
+                if any(
+                    key in action and not _nonempty_text(action[key])
+                    for key in ("title", "url")
+                ):
+                    raise ValueError(f"actions[{index}].title e url devem ser textos não vazios")
             if action_name == "wait":
-                conditions = sum(action.get(key) is not None for key in ("target", "text", "url"))
+                conditions = sum(
+                    action.get(key) is not None
+                    for key in ("target", "text", "url", "load_state")
+                )
                 if conditions != 1:
-                    raise ValueError(f"actions[{index}] requer exatamente target, text ou url")
+                    raise ValueError(
+                        f"actions[{index}] requer exatamente target, text, url ou load_state"
+                    )
+                if "text" in action and not _nonempty_text(action["text"]):
+                    raise ValueError(f"actions[{index}].text deve ser texto não vazio")
+                if "url" in action and not _nonempty_text(action["url"]):
+                    raise ValueError(f"actions[{index}].url deve ser texto não vazio")
+                if "load_state" in action and (
+                    not isinstance(action["load_state"], str)
+                    or action["load_state"] not in {
+                        "load",
+                        "domcontentloaded",
+                        "networkidle",
+                    }
+                ):
+                    raise ValueError(f"actions[{index}].load_state não é suportado")
             if action_name == "verify":
                 conditions = sum(
                     action.get(key) is not None
@@ -290,7 +477,10 @@ class BrowserOperator:
                     raise ValueError(
                         f"actions[{index}].state page_changed requer verificação sem target/text/url"
                     )
-                if action.get("state") not in {
+                state = action.get("state")
+                if state is not None and not isinstance(state, str):
+                    raise ValueError(f"actions[{index}].state não é suportado")
+                if state not in {
                     None,
                     "page_changed",
                     "visible",
@@ -299,9 +489,34 @@ class BrowserOperator:
                     "filled",
                 }:
                     raise ValueError(f"actions[{index}].state não é suportado")
-            if action_name == "press" and action.get("key") not in _SAFE_KEYS:
+                if conditions == 1 and "target" not in action and state is not None:
+                    raise ValueError(
+                        f"actions[{index}].state só é permitido com target ou page_changed"
+                    )
+            if action_name == "press" and (
+                not isinstance(action.get("key"), str)
+                or action["key"] not in _SAFE_KEYS
+            ):
                 raise ValueError(f"actions[{index}].key não é permitida")
-        return {"task_id": task_id, "actions": actions}
+            if action_name == "scroll":
+                for key in ("delta_x", "delta_y"):
+                    value = action.get(key, 0)
+                    if isinstance(value, bool) or not isinstance(value, int):
+                        raise ValueError(f"actions[{index}].{key} deve ser um inteiro")
+                if target and action.get("delta_x", 0):
+                    raise ValueError(
+                        f"actions[{index}] com target aceita somente delta_y"
+                    )
+            if action_name == "verify":
+                if "text" in action and not _nonempty_text(action["text"]):
+                    raise ValueError(f"actions[{index}].text deve ser texto não vazio")
+                if "url" in action and not _nonempty_text(action["url"]):
+                    raise ValueError(f"actions[{index}].url deve ser texto não vazio")
+        return {
+            "task_id": task_id,
+            **({"actions": actions} if not memory or "reuse" not in memory else {}),
+            **({"memory": memory} if memory is not None else {}),
+        }
 
     @staticmethod
     def _validate_target(target: Any, index: int) -> None:
@@ -312,6 +527,10 @@ class BrowserOperator:
             raise ValueError(
                 f"actions[{index}].target contém critérios não suportados: "
                 f"{', '.join(sorted(unknown))}"
+            )
+        if not set(target) - {"tag_name"}:
+            raise ValueError(
+                f"actions[{index}].target precisa de um critério além de tag_name"
             )
         for name, value in target.items():
             if name == "data_attributes":
@@ -330,6 +549,8 @@ class BrowserOperator:
     def execute(self, task: Any) -> dict[str, Any]:
         try:
             validated = self.validate_task(task)
+            if validated.get("memory"):
+                raise ValueError("memory operacional requer BrowserOperatorExecutor")
         except ValueError as error:
             task_id = None
             if isinstance(task, dict) and isinstance(task.get("task_id"), str):
@@ -462,22 +683,29 @@ class BrowserOperator:
             return self.controller.inspectPage()
         if name == "click":
             self._require_target(target)
-            self.controller.wait_for_element(timeout_ms=timeout, **target)
+            self.controller.wait_for_semantic_target(timeout_ms=timeout, **target)
             found = self.controller.find_element(**target)
             if not found["found"]:
                 raise RuntimeError("Elemento não encontrado para clique")
             return self.controller.click_element(timeout_ms=timeout, **target)
         if name == "fill":
             self._require_target(target)
-            self.controller.wait_for_element(timeout_ms=timeout, **target)
+            self.controller.wait_for_semantic_target(timeout_ms=timeout, **target)
             found = self.controller.find_element(**target)
             if not found["found"]:
                 raise RuntimeError("Campo não encontrado para preenchimento")
-            return self.controller.fill_input(action["value"], timeout_ms=timeout, **target)
+            primitive_target = self._fill_input_target(target)
+            if primitive_target is not None:
+                return self.controller.fill_input(
+                    action["value"], timeout_ms=timeout, **primitive_target
+                )
+            return self.controller.fill_semantic_input(
+                action["value"], timeout_ms=timeout, **target
+            )
         if name == "select":
             self._require_target(target)
             self._assert_action_text_allowed(action["option"])
-            self.controller.wait_for_element(timeout_ms=timeout, **target)
+            self.controller.wait_for_semantic_target(timeout_ms=timeout, **target)
             found = self.controller.find_element(**target)
             if not found["found"]:
                 raise RuntimeError("Dropdown não encontrado")
@@ -508,12 +736,19 @@ class BrowserOperator:
             return self.controller.scroll_page(delta_x=delta_x, delta_y=delta_y)
         if name == "wait":
             if target is not None:
-                if not self.controller.wait_for_element(timeout_ms=timeout, **target):
+                if not self.controller.wait_for_semantic_target(
+                    timeout_ms=timeout, **target
+                ):
                     raise RuntimeError("Elemento não apareceu")
                 return {"waited_for": "element"}
             if "text" in action:
                 self.controller.wait_for_text(action["text"], timeout_ms=timeout)
                 return {"waited_for": "text"}
+            if "load_state" in action:
+                state = self.controller.wait_for_load_state(
+                    action["load_state"], timeout_ms=timeout
+                )
+                return {"waited_for": "load_state", "state": state}
             return {
                 "url": self.controller._safe_page_url(
                     self.controller.wait_for_url(action["url"], timeout_ms=timeout)
@@ -530,6 +765,8 @@ class BrowserOperator:
             return self.controller.open_new_tab(action["url"], timeout_ms=timeout)
         if name == "switch_tab":
             return self.controller.switch_tab(title=action.get("title"), url=action.get("url"))
+        if name == "close_tab":
+            return self.controller.close_tab(title=action.get("title"), url=action.get("url"))
         if name in {"back", "forward", "reload"}:
             return getattr(self.controller, name)(timeout_ms=timeout)
         if name == "verify":
@@ -578,15 +815,55 @@ class BrowserOperator:
             raise ValueError("target deve ser um objeto não vazio")
 
     @staticmethod
+    def _fill_input_target(target: dict[str, Any]) -> dict[str, Any] | None:
+        if target.get("role") not in (None, "textbox") or "tag_name" in target:
+            return None
+        selector_groups = sum((
+            bool(target.get("accessible_name")),
+            bool(target.get("text")),
+            bool(target.get("aria_label")),
+            bool(target.get("label")),
+            bool(target.get("placeholder")),
+            bool(target.get("name")),
+            bool(target.get("element_id")),
+            bool(target.get("data_attributes")),
+        ))
+        if selector_groups != 1:
+            return None
+        supported_fields = {
+            "aria_label",
+            "label",
+            "placeholder",
+            "name",
+            "element_id",
+            "data_attributes",
+        }
+        primitive_target = {
+            key: value for key, value in target.items() if key in supported_fields
+        }
+        if target.get("accessible_name") is not None:
+            primitive_target["label"] = target["accessible_name"]
+        elif target.get("text") is not None:
+            primitive_target["label"] = target["text"]
+        return primitive_target
+
+    @staticmethod
     def _dropdown_target(target: dict[str, Any]) -> dict[str, Any]:
-        dropdown_target = dict(target)
-        trigger = dropdown_target.pop("accessible_name", None)
-        text = dropdown_target.pop("text", None)
-        if trigger is not None and text is not None:
-            raise ValueError("dropdown target não pode combinar accessible_name e text")
-        accessible_name = trigger if trigger is not None else text
-        if accessible_name is not None:
-            dropdown_target["trigger"] = accessible_name
+        supported_fields = {
+            "role",
+            "aria_label",
+            "label",
+            "placeholder",
+            "name",
+            "element_id",
+            "data_attributes",
+        }
+        dropdown_target = {
+            key: value for key, value in target.items() if key in supported_fields
+        }
+        trigger = target.get("accessible_name") or target.get("text")
+        if trigger is not None:
+            dropdown_target["trigger"] = trigger
         return dropdown_target
 
     @staticmethod
@@ -647,6 +924,7 @@ class BrowserOperatorExecutor:
         self._controller_factory = controller_factory
         self._lock = threading.RLock()
         self._results: dict[str, dict[str, Any]] = {}
+        self._memory: dict[str, dict[str, Any]] = {}
         self._execution_lock = threading.Lock()
 
     def execute(self, task: Any) -> dict[str, Any]:
@@ -676,15 +954,51 @@ class BrowserOperatorExecutor:
                             "message": "task_id já foi executado",
                         },
                     }
-            result = BrowserOperator(self._controller_factory()).execute(validated)
+                memory = validated.get("memory")
+                if memory and "reuse" in memory:
+                    memory_name = memory["reuse"]
+                    remembered = self._memory.get(memory_name)
+                    if remembered is None:
+                        return {
+                            "task_id": task_id,
+                            "status": "failed",
+                            "action": None,
+                            "result": None,
+                            "evidence": [],
+                            "error": {
+                                "code": "memory_not_found",
+                                "message": f"Não existe procedimento operacional salvo: {memory_name}",
+                            },
+                        }
+                    actions = deepcopy(remembered["actions"])
+                else:
+                    actions = deepcopy(validated["actions"])
+            result = BrowserOperator(self._controller_factory()).execute({
+                "task_id": task_id,
+                "actions": actions,
+            })
+            if (
+                result.get("status") == "completed"
+                and memory
+                and "save_as" in memory
+            ):
+                memory_name = memory["save_as"]
+                with self._lock:
+                    self._memory[memory_name] = {
+                        "actions": deepcopy(actions),
+                        "result": deepcopy(result),
+                    }
+                result["memory"] = {"saved_as": memory_name}
+            elif result.get("status") == "completed" and memory and "reuse" in memory:
+                result["memory"] = {"reused": memory["reuse"]}
             with self._lock:
-                self._results[task_id] = result
+                self._results[task_id] = deepcopy(result)
         return result
 
     def get_result(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
             result = self._results.get(task_id)
-            return dict(result) if result is not None else None
+            return deepcopy(result) if result is not None else None
 
 
 def _nonempty_text(value: Any) -> bool:
