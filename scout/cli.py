@@ -27,10 +27,11 @@ def main() -> None:
         "browser-inspect-category",
         help="abrir e inspecionar o dropdown de categoria sem selecionar uma opção",
     )
-    commands.add_parser(
+    test_city = commands.add_parser(
         "browser-test-city",
         help="diagnosticar o autocomplete de cidade sem selecionar uma sugestão",
     )
+    test_city.add_argument("--city", required=True, help="cidade exata a testar no autocomplete")
     navigate = commands.add_parser("browser-navigate", help="navegar a aba ativa para uma URL autorizada")
     navigate.add_argument("url")
     task = commands.add_parser("task", help="executar uma tarefa V2 do AUREN no AIVIO")
@@ -63,12 +64,15 @@ def main() -> None:
             parser.error(f"Os comandos browser-* da V2 aceitam somente {CDP_ENDPOINT}")
         controller = BrowserController(cdp_endpoint=cdp_endpoint)
         if args.command == "browser-test-city":
+            if not args.city.strip():
+                parser.error("--city deve ser um texto não vazio")
             result = {
                 "connected": False,
                 "city_input_found": False,
-                "typed": "PORTO",
+                "city": args.city,
+                "typed": args.city,
                 "suggestions": [],
-                "porto_alegre_found": False,
+                "city_found": False,
                 "exact_match_count": 0,
             }
             operation_error: Exception | None = None
@@ -78,9 +82,9 @@ def main() -> None:
                 if controller.element_visible(placeholder="Digite uma cidade..."):
                     result["city_input_found"] = True
                     controller.click_element(placeholder="Digite uma cidade...")
-                    controller.fill_input("PORTO", placeholder="Digite uma cidade...")
+                    controller.fill_input(args.city, placeholder="Digite uma cidade...")
                     try:
-                        controller.wait_for_text("Porto Alegre", timeout_ms=5_000)
+                        controller.wait_for_text(args.city, timeout_ms=5_000)
                     except PlaywrightTimeoutError:
                         pass
 
@@ -88,14 +92,14 @@ def main() -> None:
                     suggestions = [
                         line.strip()
                         for line in visible_text.splitlines()
-                        if line.strip().casefold().startswith("porto")
+                        if line.strip().casefold().startswith(args.city.casefold())
                     ]
                     exact_match_count = sum(
-                        suggestion.casefold() == "porto alegre"
+                        suggestion.casefold() == args.city.casefold()
                         for suggestion in suggestions
                     )
                     result["suggestions"] = suggestions
-                    result["porto_alegre_found"] = exact_match_count > 0
+                    result["city_found"] = exact_match_count > 0
                     result["exact_match_count"] = exact_match_count
             except (PlaywrightError, RuntimeError, ValueError) as error:
                 operation_error = error

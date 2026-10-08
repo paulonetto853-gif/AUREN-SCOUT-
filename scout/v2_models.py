@@ -205,7 +205,8 @@ class Task:
     def _validate_payload(task_type: TaskType, payload: dict[str, Any]) -> TaskPayload:
         if task_type == TaskType.SEARCH_LEADS:
             for name in ("city", "state", "category"):
-                payload[name] = _required_text(payload.get(name), f"payload.{name}")
+                validated = _required_text(payload.get(name), f"payload.{name}")
+                payload[name] = payload[name] if name == "city" else validated
             quantity = payload.get("quantity", 20)
             if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= 100:
                 raise ValueError("payload.quantity deve ser um inteiro entre 1 e 100")

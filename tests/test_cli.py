@@ -33,12 +33,26 @@ class CliTests(unittest.TestCase):
             patch.object(sys, "argv", ["auren-scout"]),
             patch.dict(os.environ, {"SCOUT_HOST": "127.0.0.1", "SCOUT_PORT": "8080"}, clear=False),
             patch("scout.cli.create_server", return_value=server) as create_server,
+            patch("scout.cli.TaskExecutor") as task_executor,
+            patch("scout.cli.BrowserController") as browser_controller,
         ):
             main()
 
         self.assertEqual(create_server.call_args.args[1:], ("127.0.0.1", 8080))
         self.assertTrue(server.served)
         self.assertTrue(server.closed)
+        task_executor.assert_not_called()
+        browser_controller.assert_not_called()
+
+    def test_task_without_an_explicit_type_is_not_executed(self):
+        with (
+            patch.object(sys, "argv", ["auren-scout", "task"]),
+            patch("scout.cli.TaskExecutor") as executor,
+            self.assertRaises(SystemExit),
+        ):
+            main()
+
+        executor.assert_not_called()
 
     def test_non_loopback_host_is_rejected(self):
         with (
@@ -140,60 +154,48 @@ class CliTests(unittest.TestCase):
         controller.return_value.inspectCategoryDropdown.assert_called_once_with()
         controller.return_value.navigate.assert_not_called()
 
-    def test_browser_test_city_reports_autocomplete_without_selecting_suggestion(self):
-        visible_text = "Digite uma cidade...\nPorto\nPorto Alegre\nPorto Seguro-BA\nPorto Velho-RO"
-        with (
-            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-test-city"]),
-            patch.dict(os.environ, {}, clear=True),
-            patch("scout.cli.BrowserController") as controller,
-            patch("scout.cli.TaskExecutor") as executor,
-            patch("builtins.print") as print_output,
-        ):
-            controller.return_value.read_visible_text.return_value = visible_text
-            main()
+    def test_browser_test_city_uses_the_requested_city_exactly(self):
+        for city in ("Porto Alegre", "Canoas", "Caxias do Sul"):
+            with self.subTest(city=city):
+                with (
+                    patch.object(
+                        sys, "argv",
+                        ["AurenScout-V2.exe", "browser-test-city", "--city", city],
+                    ),
+                    patch.dict(os.environ, {}, clear=True),
+                    patch("scout.cli.BrowserController") as controller,
+                    patch("scout.cli.TaskExecutor") as executor,
+                    patch("builtins.print") as print_output,
+                ):
+                    controller.return_value.read_visible_text.return_value = (
+                        f"Digite uma cidade...\n{city}\n{city} Centro"
+                    )
+                    main()
 
-        output = json.loads(print_output.call_args.args[0])
-        self.assertEqual(
-            output,
-            {
-                "connected": True,
-                "city_input_found": True,
-                "typed": "PORTO",
-                "suggestions": [
-                    "Porto",
-                    "Porto Alegre",
-                    "Porto Seguro-BA",
-                    "Porto Velho-RO",
-                ],
-                "porto_alegre_found": True,
-                "exact_match_count": 1,
-            },
-        )
-        instance = controller.return_value
-        controller.assert_called_once_with(cdp_endpoint=CDP_ENDPOINT)
-        instance.connect.assert_called_once_with()
-        instance.element_visible.assert_called_once_with(
-            placeholder="Digite uma cidade..."
-        )
-        instance.click_element.assert_called_once_with(
-            placeholder="Digite uma cidade..."
-        )
-        instance.fill_input.assert_called_once_with(
-            "PORTO", placeholder="Digite uma cidade..."
-        )
-        instance.wait_for_text.assert_called_once_with("Porto Alegre", timeout_ms=5_000)
-        instance.read_visible_text.assert_called_once_with()
-        instance.disconnect.assert_called_once_with()
-        instance.click_text.assert_not_called()
-        instance.click_button.assert_not_called()
-        instance.open_dropdown.assert_not_called()
-        instance.select_option.assert_not_called()
-        instance.navigate.assert_not_called()
-        executor.assert_not_called()
+                output = json.loads(print_output.call_args.args[0])
+                self.assertEqual(output["city"], city)
+                self.assertEqual(output["typed"], city)
+                self.assertEqual(output["suggestions"], [city, f"{city} Centro"])
+                self.assertTrue(output["city_found"])
+                self.assertEqual(output["exact_match_count"], 1)
+                instance = controller.return_value
+                instance.fill_input.assert_called_once_with(
+                    city, placeholder="Digite uma cidade..."
+                )
+                instance.wait_for_text.assert_called_once_with(city, timeout_ms=5_000)
+                instance.click_text.assert_not_called()
+                instance.click_button.assert_not_called()
+                instance.open_dropdown.assert_not_called()
+                instance.select_option.assert_not_called()
+                instance.navigate.assert_not_called()
+                executor.assert_not_called()
 
     def test_browser_test_city_prints_connection_failure_as_json(self):
         with (
-            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-test-city"]),
+            patch.object(
+                sys, "argv",
+                ["AurenScout-V2.exe", "browser-test-city", "--city", "Canoas"],
+            ),
             patch.dict(os.environ, {}, clear=True),
             patch("scout.cli.BrowserController") as controller,
             patch("builtins.print") as print_output,
@@ -208,9 +210,10 @@ class CliTests(unittest.TestCase):
             {
                 "connected": False,
                 "city_input_found": False,
-                "typed": "PORTO",
+                "city": "Canoas",
+                "typed": "Canoas",
                 "suggestions": [],
-                "porto_alegre_found": False,
+                "city_found": False,
                 "exact_match_count": 0,
             },
         )
@@ -219,7 +222,10 @@ class CliTests(unittest.TestCase):
 
     def test_browser_test_city_reports_missing_city_input(self):
         with (
-            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-test-city"]),
+            patch.object(
+                sys, "argv",
+                ["AurenScout-V2.exe", "browser-test-city", "--city", "Caxias do Sul"],
+            ),
             patch.dict(os.environ, {}, clear=True),
             patch("scout.cli.BrowserController") as controller,
             patch("builtins.print") as print_output,
@@ -238,7 +244,10 @@ class CliTests(unittest.TestCase):
 
     def test_browser_test_city_returns_false_when_exact_suggestion_is_missing(self):
         with (
-            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-test-city"]),
+            patch.object(
+                sys, "argv",
+                ["AurenScout-V2.exe", "browser-test-city", "--city", "Porto Alegre"],
+            ),
             patch.dict(os.environ, {}, clear=True),
             patch("scout.cli.BrowserController") as controller,
             patch("builtins.print") as print_output,
@@ -247,13 +256,13 @@ class CliTests(unittest.TestCase):
                 "suggestion timeout"
             )
             controller.return_value.read_visible_text.return_value = (
-                "Porto\nPorto Seguro-BA\nPorto Velho-RO"
+                "Porto Alegre - Centro\nPorto Alegre-RS"
             )
             main()
 
         output = json.loads(print_output.call_args.args[0])
-        self.assertEqual(output["suggestions"], ["Porto", "Porto Seguro-BA", "Porto Velho-RO"])
-        self.assertFalse(output["porto_alegre_found"])
+        self.assertEqual(output["suggestions"], ["Porto Alegre - Centro", "Porto Alegre-RS"])
+        self.assertFalse(output["city_found"])
         self.assertEqual(output["exact_match_count"], 0)
         controller.return_value.read_visible_text.assert_called_once_with()
 

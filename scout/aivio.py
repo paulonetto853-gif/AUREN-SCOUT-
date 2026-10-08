@@ -62,8 +62,7 @@ class AivioIntegration:
 
         if not allow_credit_consumption:
             raise PermissionError("SEARCH_LEADS exige autorização explícita para possível consumo de créditos")
-        city = city.strip()
-        if not city:
+        if not city.strip():
             raise ValueError("Informe uma cidade para pesquisar")
 
         self._require_aivio_page()
@@ -132,7 +131,7 @@ class AivioIntegration:
         leads = leads[:quantity]
         return {
             "status": "completed" if len(leads) >= quantity else "partial",
-            "city": city.strip(),
+            "city": city,
             "state": state.strip(),
             "category": category.strip(),
             "requested_quantity": quantity,
@@ -277,14 +276,13 @@ class AivioIntegration:
         if search_label is None:
             raise RuntimeError('Botão "Buscar" (ou legado "Ver agora") não encontrado no AIVIO')
 
-        self._select_city(fields["city"].strip())
+        self._select_city(fields["city"])
         self.browser_controller.open_dropdown("Escolha o ramo")
         self.browser_controller.select_option(fields["category"].strip())
 
     def _select_city(self, city: str) -> None:
         if not isinstance(city, str) or not city.strip():
             raise ValueError("Informe uma cidade para pesquisar")
-        city = city.strip()
         city_field = {"placeholder": "Digite uma cidade..."}
         self.browser_controller.click_element(**city_field)
         self.browser_controller.fill_input(city, **city_field)

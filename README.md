@@ -2,6 +2,12 @@
 
 Agente independente de pesquisa e qualificação comercial. O Scout coleta e organiza evidências públicas, audita sinais técnicos observáveis de sites e calcula uma pontuação determinística. Ele não decide contato, não envia mensagens e não se integra ao WhatsApp nem ao Automaton.
 
+## Princípio de execução subordinada
+
+**Capability não é autonomia.** O Scout V2 é um operador subordinado ao AUREN BOSS: conhece as operações disponíveis, mas não decide quando, por que ou em que ordem executá-las. Somente executa uma tarefa explícita recebida do Boss, devolve resultado ou erro e encerra aquela execução.
+
+O AUREN BOSS decide objetivo, cidade/região, categoria, quantidade, pesquisa, abertura de empresa, geração de site e próximos passos. O Scout não inicia prospecção por iniciativa própria, não escolhe localização/categoria/leads, não cria tarefas subsequentes e não toma decisões comerciais. Se não houver tarefa, permanece sem operar o navegador; se os dados obrigatórios estiverem ausentes ou ambíguos, falha explicitamente em vez de inventar valores. Crédito e efeitos externos continuam sujeitos às autorizações explícitas do contrato de cada tarefa.
+
 ## Arquitetura
 
 - `scout/discovery.py`: contrato do provedor e catálogo sintético de demonstração.
@@ -90,10 +96,10 @@ O comando retorna os inputs visíveis e seus atributos/labels e compara os eleme
 Para testar o autocomplete de cidade da V2 sem selecionar uma sugestão ou iniciar uma busca:
 
 ```powershell
-.\dist\AurenScout-V2.exe browser-test-city
+.\dist\AurenScout-V2.exe browser-test-city --city "Porto Alegre"
 ```
 
-O comando conecta ao CDP V2, localiza o input pelo placeholder `Digite uma cidade...`, clica, preenche `PORTO`, aguarda o texto exato `Porto Alegre` e retorna em JSON as linhas visíveis que começam com `Porto`, além de indicar se encontrou exatamente `Porto Alegre`. Não clica em sugestões, categoria ou “Buscar” e não executa nenhuma tarefa. A leitura textual é diagnóstica; ainda não valida no Edge real que as linhas lidas pertencem ao popup de autocomplete.
+Passe a cidade que deseja diagnosticar em `--city`. O comando conecta ao CDP V2, localiza o input pelo placeholder `Digite uma cidade...`, clica, preenche o valor recebido sem substituí-lo ou abreviá-lo, aguarda o texto exato da cidade e retorna em JSON as linhas visíveis iniciadas pelo valor solicitado e a contagem de correspondências exatas. Não clica em sugestões, categoria ou “Buscar” e não executa nenhuma tarefa. A leitura textual é diagnóstica; ainda não valida no Edge real que as linhas lidas pertencem ao popup de autocomplete.
 
 O `BrowserController` também oferece primitivas explícitas reutilizáveis para clique simples/duplo, formulários, dropdowns, teclado/clipboard, navegação e abas, rolagem, espera por elemento/texto/URL/mudança, leitura de atributos/tabelas/listas, estado, downloads e upload de arquivo explicitamente solicitado. A resolução prioriza role/nome acessível, texto exato, labels/placeholder e atributos estáveis; alvos visíveis ambíguos falham. Classes CSS não são usadas como prioridade. Interações com pagamentos e WhatsApp são bloqueadas. Os fluxos V2 `SEARCH_LEADS`, `OPEN_COMPANY` e `GENERATE_SITE` usam essas primitivas. A ausência ou ambiguidade de um controle obrigatório falha explicitamente.
 
@@ -135,10 +141,10 @@ O comando que controla o Edge precisa rodar no mesmo Windows do navegador. Um te
    ```powershell
    .\dist\AurenScout-V2.exe browser-status
    .\dist\AurenScout-V2.exe browser-inspect
-   .\dist\AurenScout-V2.exe browser-test-city
+   .\dist\AurenScout-V2.exe browser-test-city --city "Porto Alegre"
    ```
 
-   `browser-test-city` clica no input de cidade e preenche `PORTO`, mas não seleciona sugestão nem clica em “Buscar”. O `browser-status` do V2 usa `http://127.0.0.1:9223` por padrão e rejeita o endpoint V1. O status informa conexão, versão reportada por CDP, abas e endpoint; o health da integração também informa o perfil V2 esperado (`EdgeProfile-V2`), sem afirmar que CDP comprovou o diretório de perfil efetivamente usado.
+   `browser-test-city --city "Porto Alegre"` clica no input e digita exatamente a cidade recebida; não seleciona sugestão nem clica em “Buscar”. Substitua o argumento por qualquer cidade enviada pelo AUREN BOSS. O `browser-status` do V2 usa `http://127.0.0.1:9223` por padrão e rejeita o endpoint V1. O status informa conexão, versão reportada por CDP, abas e endpoint; o health da integração também informa o perfil V2 esperado (`EdgeProfile-V2`), sem afirmar que CDP comprovou o diretório de perfil efetivamente usado.
 
    Para executar `browser-status` V1 com a aplicação V1 já instalada, mantenha o endpoint em `http://127.0.0.1:9222`; não use o executável V2 para se conectar ao Edge V1. Se o projeto estiver em Codespaces, faça um clone local no Windows e execute os comandos a partir dele — não execute o cliente CDP no terminal remoto.
 

@@ -73,6 +73,29 @@ class FakeIntegration:
 
 
 class TaskContractTests(unittest.TestCase):
+    def test_search_payload_preserves_city_value(self):
+        for city in ("Porto Alegre", "Canoas", "Caxias do Sul"):
+            with self.subTest(city=city):
+                task = Task.from_dict(task_request(
+                    "SEARCH_LEADS",
+                    {"city": city, "state": "RS", "category": "restaurantes"},
+                    authorization={"allow_credit_consumption": True},
+                ))
+                self.assertEqual(task.payload.city, city)
+
+    def test_search_requires_boss_supplied_city_and_category(self):
+        base = {"city": "Porto Alegre", "state": "RS", "category": "restaurantes"}
+        authorization = {"allow_credit_consumption": True}
+        for missing in ("city", "category"):
+            with self.subTest(missing=missing):
+                payload = {key: value for key, value in base.items() if key != missing}
+                with self.assertRaisesRegex(ValueError, f"payload\\.{missing}"):
+                    Task.from_dict(task_request(
+                        "SEARCH_LEADS",
+                        payload,
+                        authorization=authorization,
+                    ))
+
     def test_search_task_validates_required_payload_and_uuid(self):
         task = Task.from_dict(task_request("SEARCH_LEADS", {
             "city": "Porto Alegre", "state": "RS", "category": "restaurantes",

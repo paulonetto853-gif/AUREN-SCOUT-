@@ -211,6 +211,28 @@ class AivioIntegrationTests(unittest.TestCase):
         self.assertNotIn(("read_inputs",), self.controller.operations)
         self.assertTrue(any(item[0] == "wait_for_page_change" for item in self.controller.operations))
 
+    def test_search_passes_each_requested_city_to_the_autocomplete_unchanged(self):
+        for city in ("Porto Alegre", "Canoas", "Caxias do Sul"):
+            with self.subTest(city=city):
+                controller = FakeBrowserController(suggestions=[city])
+                integration = AivioIntegration(controller)
+                result = integration.search_leads(
+                    city,
+                    "RS",
+                    "restaurantes",
+                    quantity=1,
+                    allow_credit_consumption=True,
+                )
+
+                self.assertEqual(result["city"], city)
+                self.assertIn(
+                    ("fill", city, {"placeholder": "Digite uma cidade..."}),
+                    controller.operations,
+                )
+                self.assertIn(("wait_for_element", city, 5_000), controller.operations)
+                self.assertIn(("click_text", city), controller.operations)
+                self.assertEqual(controller.selected_city, city)
+
     def test_city_suggestion_requires_exact_match_not_prefix_match(self):
         self.controller.suggestions = ["Porto", "Porto Seguro-BA", "Porto Velho-RO"]
         with self.assertRaisesRegex(TimeoutError, "Sugestão exata não apareceu"):
