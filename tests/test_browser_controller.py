@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from scout.browser_controller import BrowserController
+from scout.browser_controller import BrowserController, V1_CDP_ENDPOINT, V2_CDP_ENDPOINT
 
 
 class FakePage:
@@ -146,6 +146,32 @@ class BrowserControllerTests(unittest.TestCase):
             BrowserController("").connect()
         with self.assertRaises(ValueError):
             BrowserController("http://user:pass@127.0.0.1:9222").connect()
+
+    def test_defaults_to_the_v1_endpoint_when_environment_is_unset(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(BrowserController().cdp_endpoint, V1_CDP_ENDPOINT)
+
+    def test_accepts_both_version_specific_loopback_endpoints(self):
+        for endpoint in (V1_CDP_ENDPOINT, V2_CDP_ENDPOINT):
+            with self.subTest(endpoint=endpoint):
+                controller = BrowserController(endpoint)
+                with patch("scout.browser_controller.sync_playwright", return_value=self.manager):
+                    controller.connect()
+                controller.disconnect()
+
+    def test_rejects_non_loopback_https_websocket_and_wrong_ports(self):
+        invalid_endpoints = (
+            "http://192.0.2.1:9223",
+            "http://edge.example:9223",
+            "https://127.0.0.1:9223",
+            "ws://127.0.0.1:9223",
+            "wss://edge.example:9223",
+            "http://localhost:9223",
+            "http://127.0.0.1:9224",
+        )
+        for endpoint in invalid_endpoints:
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                BrowserController(endpoint).connect()
 
     def test_non_edge_cdp_endpoint_is_rejected_and_disconnected(self):
         self.browser.session.product = "Chrome/130.0.0.0"

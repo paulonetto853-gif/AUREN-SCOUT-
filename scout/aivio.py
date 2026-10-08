@@ -7,11 +7,11 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import Locator, Page
 
-from scout.browser_controller import BrowserController
+from scout.browser_controller import BrowserController, V2_CDP_ENDPOINT
 from scout.lead_normalization import deduplicate_leads, extract_lead, normalize_company_name
 from scout.v2_models import V2Lead
 
-CDP_ENDPOINT = "http://127.0.0.1:9222"
+CDP_ENDPOINT = V2_CDP_ENDPOINT
 logger = logging.getLogger("scout.aivio")
 CITY_INPUTS_SCRIPT = """() => Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea, select'))
   .map((element, index) => {

@@ -1,6 +1,8 @@
 import unittest
 import uuid
+from unittest.mock import patch
 
+from scout.aivio import CDP_ENDPOINT
 from scout.lead_normalization import (
     deduplicate_leads,
     extract_lead,
@@ -144,6 +146,18 @@ class TaskExecutorTests(unittest.TestCase):
         self.assertTrue(result["started_at"])
         self.assertTrue(result["finished_at"])
         self.assertEqual(result["errors"], [])
+
+    def test_v2_defaults_to_its_own_cdp_endpoint(self):
+        with patch.dict("os.environ", {}, clear=True):
+            executor = TaskExecutor()
+
+        self.assertEqual(CDP_ENDPOINT, "http://127.0.0.1:9223")
+        self.assertEqual(executor.browser_controller.cdp_endpoint, CDP_ENDPOINT)
+
+    def test_v2_rejects_the_v1_cdp_endpoint(self):
+        with patch.dict("os.environ", {"SCOUT_CDP_ENDPOINT": "http://127.0.0.1:9222"}):
+            with self.assertRaisesRegex(ValueError, "127.0.0.1:9223"):
+                TaskExecutor()
 
     def test_executes_open_company_and_generate_site(self):
         lead = V2Lead(company_name="Restaurante Exemplo").to_dict()

@@ -45,6 +45,8 @@ O resultado é `dist\AurenScout-V2.exe`. O nome separado evita sobrescrever um `
 .\dist\AurenScout-V2.exe
 ```
 
+O projeto mantém duas instâncias isoladas: **V1 = Fortaleza = CDP `127.0.0.1:9222`**, com o perfil `EdgeProfile`; **V2 = AIVIO = CDP `127.0.0.1:9223`**, com o perfil `EdgeProfile-V2`. O V2 aceita somente `http://127.0.0.1:9223` e não se conecta ao endpoint da V1. Os scripts de inicialização são separados e não reutilizam perfis.
+
 O processo mantém a API local ativa até Ctrl+C. Verificar em outro PowerShell:
 
 ```powershell
@@ -56,13 +58,15 @@ A resposta deve indicar `status: ok` e `operational: true`. Para desenvolvimento
 O Browser Controller é executado sob demanda, sem abrir ou autenticar o Edge. O usuário deve iniciar o Microsoft Edge com depuração remota habilitada, entrar manualmente no site desejado e manter o navegador aberto. Depois, consulte o estado via CDP:
 
 ```sh
-SCOUT_CDP_ENDPOINT=http://127.0.0.1:9222 python3 -m scout browser-status
+python3 -m scout browser-status
 ```
+
+O V2 usa `http://127.0.0.1:9223` por padrão. Para a instância V1, use o executável V1 já instalado e o endpoint `http://127.0.0.1:9222`.
 
 Para solicitar explicitamente uma navegação na aba ativa:
 
 ```sh
-SCOUT_CDP_ENDPOINT=http://127.0.0.1:9222 python3 -m scout browser-navigate https://example.com/
+python3 -m scout browser-navigate https://example.com/
 ```
 
 O comando de status retorna conexão, navegador, abas com título/URL e aba ativa em JSON. Navegação aceita somente URLs HTTP(S) sem credenciais; nenhuma URL é aberta automaticamente. Não exponha o endpoint CDP a redes não confiáveis.
@@ -78,23 +82,31 @@ O comando que controla o Edge precisa rodar no mesmo Windows do navegador. Um te
    py -m pip install -r requirements.txt
    ```
 
-3. Inicie o Edge autorizado com CDP local:
+3. Para iniciar o Edge da V1 (Fortaleza), mantenha o script e o perfil existentes:
 
    ```powershell
    .\scripts\start-edge-cdp.ps1
    ```
 
-   O script encontra o executável do Edge pelo registro do Windows; não presume um caminho de instalação. Ele cria e usa um perfil dedicado em `%LOCALAPPDATA%\AurenScout\EdgeProfile` e limita o CDP a `127.0.0.1:9222`. Edge recente exige um diretório de dados separado para habilitar depuração remota; esse perfil novo não é uma cópia do perfil pessoal. Não aponte o script para o perfil pessoal e não copie cookies ou credenciais. A primeira vez, faça o login no AIVIO manualmente nesse perfil e mantenha o Edge aberto.
+   Esse script mantém a V1 em `127.0.0.1:9222` e usa `%LOCALAPPDATA%\AurenScout\EdgeProfile`. Não o altere para iniciar a V2.
 
-4. No mesmo PowerShell local, configure o endpoint e consulte o estado:
+4. Para iniciar o Edge da V2 (AIVIO), use exclusivamente o script novo:
 
    ```powershell
-   Invoke-RestMethod http://127.0.0.1:9222/json/version | ConvertTo-Json -Depth 4
-   $env:SCOUT_CDP_ENDPOINT = "http://127.0.0.1:9222"
-   python -m scout browser-status
+   .\scripts\start-edge-cdp-v2.ps1
    ```
 
-   A primeira linha confirma que o endpoint CDP local responde. A resposta do Scout deve ser JSON com `"connected": true`, `"browser": "Microsoft Edge"`, `tabs` (título e URL de cada aba) e `activeTab`. Se o projeto estiver em Codespaces, faça um clone local no Windows e execute `py -m pip install` e o comando de status a partir desse clone — não execute o cliente CDP no terminal remoto.
+   O script V2 fixa CDP em `127.0.0.1:9223` e o perfil em `C:\Users\gabriela.pacheco\AppData\Local\AurenScout\EdgeProfile-V2`. Ele não lê, altera ou reutiliza `EdgeProfile`. Faça login manualmente no perfil V2 e mantenha o Edge aberto. Depois, verifique e consulte o Edge V2:
+
+   ```powershell
+   Invoke-RestMethod http://127.0.0.1:9223/json/version | ConvertTo-Json -Depth 4
+   Remove-Item Env:SCOUT_CDP_ENDPOINT -ErrorAction SilentlyContinue
+   .\dist\AurenScout-V2.exe browser-status
+   ```
+
+   O `browser-status` do V2 usa `http://127.0.0.1:9223` quando `SCOUT_CDP_ENDPOINT` não está definido e rejeita o endpoint V1. O resultado deve conter `"connected": true`, `"browser": "Microsoft Edge"`, `tabs` (título e URL de cada aba) e `activeTab`.
+
+   Para executar `browser-status` V1 com a aplicação V1 já instalada, mantenha o endpoint em `http://127.0.0.1:9222`; não use o executável V2 para se conectar ao Edge V1. Se o projeto estiver em Codespaces, faça um clone local no Windows e execute os comandos a partir dele — não execute o cliente CDP no terminal remoto.
 
 O script não cria túneis, não altera firewall e não autentica no AIVIO. O endpoint CDP dá controle elevado sobre a instância do navegador: mantenha-o vinculado ao loopback, não encaminhe a porta e não o exponha à rede/internet. Se a porta estiver ocupada ou o Edge não puder ser localizado pelo registro, o script para com erro em vez de escolher outro executável ou iniciar outro navegador.
 
@@ -150,7 +162,7 @@ Como o AIVIO não fornece neste repositório um contrato estável de DOM/URL, a 
 | `SCOUT_HOST` | `127.0.0.1` | A API só aceita o loopback `127.0.0.1`. |
 | `SCOUT_PORT` | `8080` | Porta HTTP. |
 | `SCOUT_LOG_LEVEL` | `INFO` | Nível de log. |
-| `SCOUT_CDP_ENDPOINT` | `http://127.0.0.1:9222` no executor V2 | Endpoint local do Edge disponibilizado pelo usuário; comandos avulsos `browser-*` mantêm a exigência de configuração explícita. |
+| `SCOUT_CDP_ENDPOINT` | `http://127.0.0.1:9223` no V2; V1 permanece em `http://127.0.0.1:9222` | Endpoint CDP local da versão correspondente. O V2 aceita somente seu endereço loopback HTTP em `127.0.0.1:9223`; a V1 permanece isolada em `127.0.0.1:9222`. |
 | `SCOUT_AIVIO_GENERATION_TIMEOUT_MS` | `120000` | Timeout da espera condicional da geração do site (1000–600000 ms). |
 
 O Browser Controller valida que o endpoint fala com Microsoft Edge e não armazena credenciais, cookies ou tokens. Não configure credenciais na URL do endpoint.
@@ -215,7 +227,7 @@ A soma é limitada a 100. Classificação: `low` 0–39, `medium` 40–69, `good
 python3 -m unittest discover -s tests -v
 ```
 
-Os testes unitários simulam o transporte CDP e não exigem Edge ativo. Para verificar uma instância Edge real já aberta e autorizada pelo usuário, execute `SCOUT_CDP_ENDPOINT=http://127.0.0.1:9222 python3 -m scout browser-status`; o resultado deve conter `"connected": true`, `"browser": "Microsoft Edge"`, `tabs` com título/URL e `activeTab`. Não tente autenticar nem abrir sites automaticamente.
+Os testes unitários simulam o transporte CDP e não exigem Edge ativo. Para verificar a instância Edge V2 real já aberta e autorizada pelo usuário, execute `python3 -m scout browser-status`; o padrão é `http://127.0.0.1:9223`. O resultado deve conter `"connected": true`, `"browser": "Microsoft Edge"`, `tabs` com título/URL e `activeTab`. Não tente autenticar nem abrir sites automaticamente.
 
 O teste de empacotamento executa quando PyInstaller está instalado (`python3 -m pip install -r requirements-build.txt`); no Windows, ele verifica que o artefato `.exe` é gerado.
 
@@ -241,7 +253,7 @@ python -m unittest discover -s tests -p "test_aivio_live.py" -v
 O teste de integração real executa o mesmo fluxo e fica ignorado quando `SCOUT_CDP_ENDPOINT` não está configurado:
 
 ```sh
-SCOUT_CDP_ENDPOINT=http://127.0.0.1:9222 python3 -m unittest discover -s tests -p 'test_browser_controller_live.py' -v
+SCOUT_CDP_ENDPOINT=http://127.0.0.1:9223 python3 -m unittest discover -s tests -p 'test_browser_controller_live.py' -v
 ```
 
 ## Limitações

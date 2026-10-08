@@ -1,4 +1,3 @@
-import ipaddress
 import logging
 import os
 from urllib.parse import urlsplit
@@ -7,17 +6,9 @@ from playwright.sync_api import Browser, Page, Playwright, sync_playwright
 
 logger = logging.getLogger("scout.browser")
 
-
-def _is_loopback_hostname(hostname: str | None) -> bool:
-    if not hostname:
-        return False
-    candidate = hostname.casefold()
-    if candidate in {"localhost", "::1", "[::1]"}:
-        return True
-    try:
-        return ipaddress.ip_address(hostname).is_loopback
-    except ValueError:
-        return False
+V1_CDP_ENDPOINT = "http://127.0.0.1:9222"
+V2_CDP_ENDPOINT = "http://127.0.0.1:9223"
+_ALLOWED_CDP_PORTS = {9222, 9223}
 
 
 def _validate_http_url(url: str) -> None:
@@ -38,7 +29,11 @@ def _validate_http_url(url: str) -> None:
 
 class BrowserController:
     def __init__(self, cdp_endpoint: str | None = None) -> None:
-        self.cdp_endpoint = cdp_endpoint if cdp_endpoint is not None else os.getenv("SCOUT_CDP_ENDPOINT", "")
+        self.cdp_endpoint = (
+            cdp_endpoint
+            if cdp_endpoint is not None
+            else os.getenv("SCOUT_CDP_ENDPOINT", V1_CDP_ENDPOINT)
+        )
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
 
@@ -57,19 +52,24 @@ class BrowserController:
         try:
             parts = urlsplit(self.cdp_endpoint)
             valid_endpoint = (
-                parts.scheme in {"http", "https"}
-                and bool(parts.hostname)
+                parts.scheme == "http"
+                and parts.hostname == "127.0.0.1"
                 and parts.username is None
                 and parts.password is None
                 and not parts.query
                 and not parts.fragment
-                and parts.port == 9222
-                and _is_loopback_hostname(parts.hostname)
+                and parts.port in _ALLOWED_CDP_PORTS
             )
         except ValueError as error:
-            raise ValueError("SCOUT_CDP_ENDPOINT deve apontar para o CDP local do Edge em http://127.0.0.1:9222") from error
+            raise ValueError(
+                "SCOUT_CDP_ENDPOINT deve ser http://127.0.0.1:9222 (V1) "
+                "ou http://127.0.0.1:9223 (V2)"
+            ) from error
         if not valid_endpoint:
-            raise ValueError("SCOUT_CDP_ENDPOINT deve apontar para o CDP local do Edge em http://127.0.0.1:9222")
+            raise ValueError(
+                "SCOUT_CDP_ENDPOINT deve ser http://127.0.0.1:9222 (V1) "
+                "ou http://127.0.0.1:9223 (V2)"
+            )
 
         playwright = sync_playwright().start()
         try:

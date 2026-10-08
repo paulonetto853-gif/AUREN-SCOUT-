@@ -7,6 +7,7 @@ import uuid
 from playwright.sync_api import Error as PlaywrightError
 
 from scout.api import create_server
+from scout.aivio import CDP_ENDPOINT
 from scout.browser_controller import BrowserController
 from scout.discovery import MockSearchProvider
 from scout.service import ScoutService
@@ -37,7 +38,10 @@ def main() -> None:
     logging.basicConfig(level=os.getenv("SCOUT_LOG_LEVEL", "INFO").upper(),
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.command in {"browser-status", "browser-navigate"}:
-        controller = BrowserController()
+        cdp_endpoint = os.getenv("SCOUT_CDP_ENDPOINT", CDP_ENDPOINT)
+        if cdp_endpoint != CDP_ENDPOINT:
+            parser.error(f"Os comandos browser-* da V2 aceitam somente {CDP_ENDPOINT}")
+        controller = BrowserController(cdp_endpoint=cdp_endpoint)
         try:
             controller.connect()
             result = controller.getStatus() if args.command == "browser-status" else controller.navigate(args.url)

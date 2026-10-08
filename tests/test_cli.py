@@ -4,6 +4,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from scout.aivio import CDP_ENDPOINT
 from scout.cli import main
 from scout.v2_models import TaskResult, TaskStatus, TaskType
 
@@ -47,6 +48,43 @@ class CliTests(unittest.TestCase):
             main()
 
         create_server.assert_not_called()
+
+    def test_v2_browser_status_defaults_to_its_own_endpoint(self):
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-status"]),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("builtins.print"),
+        ):
+            controller.return_value.getStatus.return_value = {"connected": True}
+            main()
+
+        controller.assert_called_once_with(cdp_endpoint=CDP_ENDPOINT)
+        controller.return_value.connect.assert_called_once_with()
+        controller.return_value.disconnect.assert_called_once_with()
+
+    def test_v2_browser_status_accepts_its_explicit_endpoint(self):
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-status"]),
+            patch.dict(os.environ, {"SCOUT_CDP_ENDPOINT": CDP_ENDPOINT}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("builtins.print"),
+        ):
+            controller.return_value.getStatus.return_value = {"connected": True}
+            main()
+
+        controller.assert_called_once_with(cdp_endpoint=CDP_ENDPOINT)
+
+    def test_v2_browser_status_rejects_the_v1_endpoint(self):
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-status"]),
+            patch.dict(os.environ, {"SCOUT_CDP_ENDPOINT": "http://127.0.0.1:9222"}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            self.assertRaises(SystemExit),
+        ):
+            main()
+
+        controller.assert_not_called()
 
     def test_task_command_executes_and_prints_standardized_result(self):
         result = TaskResult(

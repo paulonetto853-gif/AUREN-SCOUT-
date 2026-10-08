@@ -165,7 +165,7 @@ class FakePage:
 
 
 class FakeBrowserController:
-    def __init__(self, page=None, cdp_endpoint="http://127.0.0.1:9222"):
+    def __init__(self, page=None, cdp_endpoint="http://127.0.0.1:9223"):
         self.page = page
         self.cdp_endpoint = cdp_endpoint
 
@@ -334,8 +334,10 @@ class AivioIntegrationTests(unittest.TestCase):
         self.assertEqual(result["companyDetails"]["title"], "Restaurante Exemplo | AIVIO")
 
     def test_requires_the_exact_loopback_cdp_endpoint(self):
-        with self.assertRaisesRegex(ValueError, "127.0.0.1:9222"):
-            AivioIntegration(FakeBrowserController(self.page, "http://localhost:9222"))
+        with self.assertRaisesRegex(ValueError, "127.0.0.1:9223"):
+            AivioIntegration(FakeBrowserController(self.page, "http://localhost:9223"))
+        with self.assertRaisesRegex(ValueError, "127.0.0.1:9223"):
+            AivioIntegration(FakeBrowserController(self.page, "http://127.0.0.1:9222"))
 
     def test_city_input_metadata_does_not_return_input_values(self):
         self.assertNotIn("element.value", CITY_INPUTS_SCRIPT)
