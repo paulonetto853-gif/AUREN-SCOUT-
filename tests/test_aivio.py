@@ -14,16 +14,16 @@ class FakePage:
 
 
 class FakeBrowserController:
-    def __init__(self, *, state_inputs=None, buttons=None, pages=None):
+    def __init__(self, *, suggestions=None, buttons=None, pages=None):
         self.page = FakePage()
         self.cdp_endpoint = "http://127.0.0.1:9223"
-        self.state_inputs = state_inputs if state_inputs is not None else [{
-            "tag": "input",
-            "type": "text",
-            "name": "state",
-            "labels": ["Estado"],
-            "data_attributes": {},
-        }]
+        self.suggestions = suggestions if suggestions is not None else [
+            "Porto",
+            "Porto Alegre",
+            "Porto Seguro-BA",
+            "Porto Velho-RO",
+            "Porto Covo",
+        ]
         self.buttons = buttons if buttons is not None else [
             {"text": "Escolha o ramo", "disabled": False},
             {"text": "Buscar", "disabled": False},
@@ -42,6 +42,7 @@ class FakeBrowserController:
         self.text = "Pesquisa de empresas"
         self.links = []
         self.fail_wait = False
+        self.selected_city = None
 
     def getActivePage(self):
         return self.page
@@ -52,22 +53,57 @@ class FakeBrowserController:
     def active_tab(self):
         return {"title": self.page.title(), "url": self.page.url}
 
-    def read_inputs(self):
-        return [
-            {"tag": "input", "type": "text", "placeholder": "Digite uma cidade..."},
-            *self.state_inputs,
-        ]
-
     def read_buttons(self):
         return list(self.buttons)
 
+    def read_inputs(self):
+        self.operations.append(("read_inputs",))
+        return [
+            {
+                "tag": "input",
+                "type": "text",
+                "placeholder": "Digite uma cidade...",
+                "data_attributes": {"data-slot": "input"},
+            },
+            {
+                "tag": "input",
+                "type": "text",
+                "id": "base-ui-_r_q_-hidden-input",
+                "placeholder": "",
+                "aria_label": "",
+                "name": "",
+                "labels": [],
+                "data_attributes": {},
+            },
+        ]
+
+    def click_element(self, **target):
+        self.operations.append(("click_element", target))
+        return {"clicked": True, "page_changed": False}
+
     def fill_input(self, value, **target):
         self.operations.append(("fill", value, target))
+        self.typed_city = value
         return {"filled": True, "value_changed": True}
 
-    def select_native_option(self, value, **target):
-        self.operations.append(("select_native", value, target))
-        return {"selected": True, "value": value}
+    def wait_for_element(self, *, text, timeout_ms):
+        self.operations.append(("wait_for_element", text, timeout_ms))
+        matches = [suggestion for suggestion in self.suggestions if suggestion == text]
+        if not matches:
+            raise TimeoutError(f"Sugestão exata não apareceu: {text}")
+        if len(matches) > 1:
+            raise ValueError(f"Alvo ambíguo para sugestão {text}")
+        return True
+
+    def click_text(self, text):
+        self.operations.append(("click_text", text))
+        matches = [suggestion for suggestion in self.suggestions if suggestion == text]
+        if not matches:
+            raise RuntimeError(f"Elemento não encontrado: sugestão {text}")
+        if len(matches) > 1:
+            raise ValueError(f"Alvo ambíguo para sugestão {text}")
+        self.selected_city = matches[0]
+        return {"clicked": True, "page_changed": True}
 
     def open_dropdown(self, trigger, **target):
         self.operations.append(("open_dropdown", trigger, target))
@@ -142,48 +178,52 @@ class AivioIntegrationTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["company_name"], "Restaurante Exemplo")
         self.assertEqual(result["results"][0]["phone"], "51999990000")
         self.assertEqual(result["results"][0]["company_url"], "https://app.aivio.example/company/123")
-        self.assertIn(("fill", "Porto Alegre", {"placeholder": "Digite uma cidade..."}),
-                      self.controller.operations)
-        self.assertIn(("fill", "RS", {"label": "Estado"}), self.controller.operations)
+        self.assertIn(
+            ("click_element", {"placeholder": "Digite uma cidade..."}),
+            self.controller.operations,
+        )
+        self.assertIn(
+            ("fill", "Porto Alegre", {"placeholder": "Digite uma cidade..."}),
+            self.controller.operations,
+        )
+        self.assertIn(("wait_for_element", "Porto Alegre", 5_000), self.controller.operations)
+        self.assertIn(("click_text", "Porto Alegre"), self.controller.operations)
+        self.assertEqual(self.controller.selected_city, "Porto Alegre")
         self.assertIn(("open_dropdown", "Escolha o ramo", {}), self.controller.operations)
         self.assertIn(("select_option", "restaurantes"), self.controller.operations)
         self.assertIn(("click_button", "Buscar"), self.controller.operations)
+        operations = [item[0] for item in self.controller.operations]
+        self.assertLess(operations.index("click_element"), operations.index("fill"))
+        self.assertLess(operations.index("fill"), operations.index("wait_for_element"))
+        self.assertLess(operations.index("wait_for_element"), operations.index("click_text"))
+        self.assertLess(operations.index("click_text"), operations.index("open_dropdown"))
+        self.assertLess(operations.index("select_option"), operations.index("click_button"))
+        self.assertNotIn(("read_inputs",), self.controller.operations)
         self.assertTrue(any(item[0] == "wait_for_page_change" for item in self.controller.operations))
 
-    def test_native_state_select_uses_confirmed_stable_name(self):
-        self.controller.state_inputs = [{
-            "tag": "select",
-            "type": "select",
-            "name": "state",
-            "labels": [],
-            "data_attributes": {},
-        }]
-        self.integration.search_leads(
-            "Porto Alegre", "RS", "restaurantes", quantity=1,
-            allow_credit_consumption=True,
-        )
-        self.assertIn(
-            ("select_native", "RS", {"name": "state"}),
-            self.controller.operations,
-        )
-
-    def test_missing_state_selector_fails_before_search(self):
-        self.controller.state_inputs = []
-        with self.assertRaisesRegex(RuntimeError, "Estado sem atributo estável confirmado"):
+    def test_city_suggestion_requires_exact_match_not_prefix_match(self):
+        self.controller.suggestions = ["Porto", "Porto Seguro-BA", "Porto Velho-RO"]
+        with self.assertRaisesRegex(TimeoutError, "Sugestão exata não apareceu"):
             self.integration.search_leads(
-                "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
+                "Porto Alegre",
+                "RS",
+                "restaurantes",
+                allow_credit_consumption=True,
             )
+        self.assertIsNone(self.controller.selected_city)
+        self.assertFalse(any(item[0] == "open_dropdown" for item in self.controller.operations))
         self.assertFalse(any(item[0] == "click_button" for item in self.controller.operations))
 
-    def test_ambiguous_state_selector_fails_explicitly(self):
-        self.controller.state_inputs = [
-            {"name": "state", "labels": [], "data_attributes": {}},
-            {"aria_label": "Estado", "labels": [], "data_attributes": {}},
-        ]
-        with self.assertRaisesRegex(RuntimeError, "Estado ambíguo"):
+    def test_city_suggestion_ambiguity_is_rejected(self):
+        self.controller.suggestions = ["Porto Alegre", "Porto Alegre"]
+        with self.assertRaisesRegex(ValueError, "ambíguo"):
             self.integration.search_leads(
-                "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
+                "Porto Alegre",
+                "RS",
+                "restaurantes",
+                allow_credit_consumption=True,
             )
+        self.assertFalse(any(item[0] == "open_dropdown" for item in self.controller.operations))
 
     def test_category_and_search_controls_must_be_unique(self):
         self.controller.buttons.append({"text": "Buscar", "disabled": False})

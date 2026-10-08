@@ -424,6 +424,21 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(opened, {"opened": True, "kind": "custom"})
         self.assertEqual(selected, {"selected": True, "value_changed": True})
 
+    def test_open_aivio_category_combobox_by_observed_accessible_name(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Escolha o ramo",
+            attributes={"role": "combobox", "data-slot": "select-trigger"},
+            on_click=lambda: setattr(self.page, "dropdown_closed", False),
+        )
+        self.page.roles[("combobox", "Escolha o ramo")] = trigger
+
+        result = self.controller.open_dropdown("Escolha o ramo")
+
+        self.assertEqual(result, {"opened": True, "kind": "custom"})
+        self.assertEqual(trigger.click_count, 1)
+
     def test_select_option_from_native_select(self):
         select = FakeActionLocator(
             self.page,

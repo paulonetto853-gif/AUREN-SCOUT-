@@ -67,7 +67,7 @@ class AivioIntegration:
             raise ValueError("Informe uma cidade para pesquisar")
 
         self._require_aivio_page()
-        self.browser_controller.fill_input(city, placeholder="Digite uma cidade...")
+        self._select_city(city)
         before = self.browser_controller.capture_page_state()
         self._click_search_button()
         self.browser_controller.wait_for_page_change(before, timeout_ms=20_000)
@@ -265,97 +265,25 @@ class AivioIntegration:
         }
 
     def _fill_search_fields(self, fields: dict[str, str]) -> None:
-        inputs = self.browser_controller.read_inputs()
-        state_targets = [
-            item for item in inputs
-            if isinstance(item, dict) and self._state_input_descriptor(item)
-        ]
-        if not state_targets:
-            raise RuntimeError(
-                "Campo de Estado sem atributo estável confirmado; inspecione a página AIVIO antes da busca"
-            )
-        if len(state_targets) > 1:
-            raise RuntimeError(
-                "Campo de Estado ambíguo: mais de um input possui atributos identificadores de Estado"
-            )
-        state_target = self._stable_input_target(state_targets[0])
-        if state_target is None:
-            raise RuntimeError(
-                "Campo de Estado sem label, aria-label, placeholder, name, id ou data-* estável"
-            )
-
         buttons = self.browser_controller.read_buttons()
         self._require_unique_button(buttons, "Escolha o ramo")
         search_label = self._search_button_label(buttons)
         if search_label is None:
             raise RuntimeError('Botão "Buscar" (ou legado "Ver agora") não encontrado no AIVIO')
 
-        self.browser_controller.fill_input(fields["city"].strip(), placeholder="Digite uma cidade...")
-        if state_targets[0].get("type") == "select":
-            self.browser_controller.select_native_option(fields["state"].strip(), **state_target)
-        else:
-            self.browser_controller.fill_input(fields["state"].strip(), **state_target)
+        self._select_city(fields["city"].strip())
         self.browser_controller.open_dropdown("Escolha o ramo")
         self.browser_controller.select_option(fields["category"].strip())
 
-    @staticmethod
-    def _state_input_descriptor(item: dict[str, Any]) -> bool:
-        descriptor_parts = [
-            item.get("name", ""),
-            item.get("id", ""),
-            item.get("aria_label", ""),
-            item.get("placeholder", ""),
-            item.get("role", ""),
-        ]
-        labels = item.get("labels")
-        if isinstance(labels, list):
-            descriptor_parts.extend(labels)
-        data_attributes = item.get("data_attributes")
-        if isinstance(data_attributes, dict):
-            descriptor_parts.extend(
-                f"{key} {value}" for key, value in data_attributes.items()
-                if isinstance(key, str) and isinstance(value, str)
-            )
-        descriptor = " ".join(value for value in descriptor_parts if isinstance(value, str))
-        return bool(re.search(r"(?<!\w)(?:state|estado|uf)(?!\w)", descriptor, re.I))
-
-    @staticmethod
-    def _stable_input_target(item: dict[str, Any]) -> dict[str, Any] | None:
-        labels = item.get("labels")
-        if isinstance(labels, list):
-            matching_labels = [
-                label for label in labels
-                if isinstance(label, str)
-                and re.search(r"(?<!\w)(?:state|estado|uf)(?!\w)", label, re.I)
-            ]
-            if len(matching_labels) == 1:
-                return {"label": matching_labels[0]}
-            if len(matching_labels) > 1:
-                raise RuntimeError("Campo de Estado possui labels ambíguos")
-        for key, argument in (
-            ("aria_label", "aria_label"),
-            ("placeholder", "placeholder"),
-            ("name", "name"),
-            ("id", "element_id"),
-        ):
-            value = item.get(key)
-            if isinstance(value, str) and value and re.search(
-                r"(?<!\w)(?:state|estado|uf)(?!\w)", value, re.I
-            ):
-                return {argument: value}
-        data_attributes = item.get("data_attributes")
-        if isinstance(data_attributes, dict):
-            matches = {
-                key: value for key, value in data_attributes.items()
-                if isinstance(key, str)
-                and isinstance(value, str)
-                and re.search(r"(?<!\w)(?:state|estado|uf)(?!\w)", f"{key} {value}", re.I)
-            }
-            if len(matches) == 1:
-                return {"data_attributes": matches}
-            if len(matches) > 1:
-                raise RuntimeError("Campo de Estado possui data-* ambíguos")
-        return None
+    def _select_city(self, city: str) -> None:
+        if not isinstance(city, str) or not city.strip():
+            raise ValueError("Informe uma cidade para pesquisar")
+        city = city.strip()
+        city_field = {"placeholder": "Digite uma cidade..."}
+        self.browser_controller.click_element(**city_field)
+        self.browser_controller.fill_input(city, **city_field)
+        self.browser_controller.wait_for_element(text=city, timeout_ms=5_000)
+        self.browser_controller.click_text(city)
 
     @staticmethod
     def _require_unique_button(buttons: list[dict[str, Any]], label: str) -> dict[str, Any]:
