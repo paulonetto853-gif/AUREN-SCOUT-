@@ -59,7 +59,7 @@ class FakePage:
     def wait_for_timeout(self, timeout):
         self.waited_for_timeout = timeout
 
-    def goto(self, url, wait_until):
+    def goto(self, url, wait_until, timeout=30_000):
         self.navigated_to = (url, wait_until)
         self.url = url
         self._title = "Destino"
@@ -161,6 +161,16 @@ class BrowserControllerTests(unittest.TestCase):
         self.assertTrue(self.playwright.stopped)
         self.assertTrue(self.browser.connected)
 
+    def test_tab_status_removes_query_and_fragment_secrets(self):
+        self.active_page.url = "https://aivio.example/home?access_token=hidden#private"
+        self.connect()
+
+        status = self.controller.getStatus()
+
+        self.assertEqual(status["activeTab"]["url"], "https://aivio.example/home")
+        self.assertNotIn("access_token", json.dumps(status))
+        self.assertNotIn("private", json.dumps(status))
+
     def test_reconnect_stops_stale_playwright_after_edge_disconnects(self):
         self.connect()
         old_playwright = self.playwright
@@ -248,11 +258,13 @@ class BrowserControllerTests(unittest.TestCase):
         self.assertEqual(result["url"], "https://aivio.example/home")
         self.assertEqual(result["text"], "Página atual do AIVIO")
         self.assertEqual(result["inputs"], [{
-            "tag": "input", "type": "text", "name": "city", "placeholder": "Cidade",
-            "aria_label": "Cidade", "value": "Porto Alegre",
+            "tag": "input", "type": "text", "name": "city", "id": None, "role": None,
+            "placeholder": "Cidade", "aria_label": "Cidade", "autocomplete": None,
+            "labels": None, "data_attributes": None, "value": "Porto Alegre",
         }, {
-            "tag": "input", "type": "text", "name": "api_token", "placeholder": "",
-            "aria_label": "", "value": None,
+            "tag": "input", "type": "text", "name": "api_token", "id": None, "role": None,
+            "placeholder": "", "aria_label": "", "autocomplete": None,
+            "labels": None, "data_attributes": None, "value": None,
         }])
         self.assertEqual(result["buttons"], [{"text": "Buscar", "aria_label": "", "type": "submit"}])
         self.assertEqual(result["links"], [{"text": "Ajuda", "href": "https://aivio.example/help"}])
@@ -310,7 +322,6 @@ class BrowserControllerTests(unittest.TestCase):
             "title": "AIVIO Dashboard",
             "url": page_url,
             "inputs": [city_input_info, input_info],
-            "second_text_input_without_placeholder": input_info,
             "category_button": button_info,
             "elements": [{"signature": "category-trigger", **button_info}],
         }
@@ -318,7 +329,6 @@ class BrowserControllerTests(unittest.TestCase):
             "title": "AIVIO Dashboard",
             "url": page_url,
             "inputs": [city_input_info, input_info],
-            "second_text_input_without_placeholder": input_info,
             "category_button": {**button_info, "aria_attributes": {"aria-expanded": "true"}},
             "elements": [
                 {"signature": "category-trigger", **button_info},
@@ -342,7 +352,7 @@ class BrowserControllerTests(unittest.TestCase):
         self.assertTrue(self.active_page.category_clicked)
         self.assertEqual(self.active_page.waited_for_timeout, 300)
         self.assertEqual(result["inputs_before_open"], [city_input_info, input_info])
-        self.assertEqual(result["second_text_input_without_placeholder"], input_info)
+        self.assertNotIn("second_text_input_without_placeholder", result)
         self.assertEqual(result["category_button"], button_info)
         self.assertEqual(result["new_elements"], [{
             "tag": "div",

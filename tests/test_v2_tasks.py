@@ -1,3 +1,9 @@
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
 import unittest
 import uuid
 from unittest.mock import patch
@@ -11,16 +17,19 @@ from scout.lead_normalization import (
     normalize_text,
     normalize_url,
 )
-from scout.task_executor import TaskExecutor
+from scout.task_executor import TaskExecutor, _browser_execution_lock
 from scout.v2_models import SearchLeadsPayload, Task, TaskStatus, TaskType, V2Lead
 
 
-def task_request(task_type, payload=None):
-    return {
+def task_request(task_type, payload=None, authorization=None):
+    request = {
         "task_id": str(uuid.uuid4()),
         "type": task_type,
         "payload": payload or {},
     }
+    if authorization is not None:
+        request["authorization"] = authorization
+    return request
 
 
 class FakeIntegration:
@@ -31,8 +40,12 @@ class FakeIntegration:
             "aivio_available": True,
         }
         self.generate_error = None
+        self.search_authorization = None
+        self.open_authorization = None
+        self.generate_authorization = None
 
     def search_leads(self, **kwargs):
+        self.search_authorization = kwargs.get("allow_credit_consumption")
         return {
             "status": "completed",
             "city": kwargs["city"],
@@ -44,11 +57,13 @@ class FakeIntegration:
             "warnings": [],
         }
 
-    def open_company(self, lead):
+    def open_company(self, lead, **kwargs):
+        self.open_authorization = kwargs.get("allow_credit_consumption")
         lead.phone = "5511999999999"
         return lead
 
-    def generate_site(self, lead):
+    def generate_site(self, lead, **kwargs):
+        self.generate_authorization = kwargs
         if self.generate_error:
             raise self.generate_error
         return lead, [{"type": "website", "url": "https://cliente.aivio.example", "title": "Restaurante"}], []
@@ -62,7 +77,7 @@ class TaskContractTests(unittest.TestCase):
         task = Task.from_dict(task_request("SEARCH_LEADS", {
             "city": "Porto Alegre", "state": "RS", "category": "restaurantes",
             "quantity": 20, "filters": {"has_website": False},
-        }))
+        }, authorization={"allow_credit_consumption": True}))
         self.assertEqual(task.type, TaskType.SEARCH_LEADS)
         self.assertIsInstance(task.payload, SearchLeadsPayload)
         with self.assertRaisesRegex(ValueError, "UUID"):
@@ -70,6 +85,10 @@ class TaskContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "payload.state"):
             Task.from_dict(task_request("SEARCH_LEADS", {
                 "city": "Porto Alegre", "category": "restaurantes",
+            }))
+        with self.assertRaisesRegex(ValueError, "allow_credit_consumption"):
+            Task.from_dict(task_request("SEARCH_LEADS", {
+                "city": "Porto Alegre", "state": "RS", "category": "restaurantes",
             }))
 
     def test_lead_round_trip_has_standard_fields(self):
@@ -108,6 +127,24 @@ class LeadNormalizationTests(unittest.TestCase):
         self.assertTrue(lead.has_website)
         self.assertEqual(lead.raw_data["search_result"], raw)
 
+    def test_urls_and_raw_data_redact_sensitive_parameters_and_tokens(self):
+        url = normalize_url(
+            "https://app.aivio.example/company/1?access_token=secret&view=leads#private"
+        )
+        self.assertEqual(url, "https://app.aivio.example/company/1?view=leads")
+
+        lead = extract_lead({
+            "title": "Empresa Exemplo",
+            "url": "https://app.aivio.example/company/2?session=private",
+            "text": "Bearer abc.def.ghi",
+            "links": [],
+            "metadata": {"access_token": "raw-secret"},
+        })
+        self.assertEqual(lead.source_url, "https://app.aivio.example/company/2")
+        self.assertNotIn("private", str(lead.raw_data))
+        self.assertNotIn("raw-secret", str(lead.raw_data))
+        self.assertNotIn("Bearer", str(lead.raw_data))
+
     def test_deduplication_uses_phone_domain_name_and_company_url(self):
         first = V2Lead(company_name="Loja A", city="Porto Alegre", phone="5511999999999")
         same_phone = V2Lead(company_name="Loja B", city="São Paulo", phone="5511999999999")
@@ -137,7 +174,7 @@ class TaskExecutorTests(unittest.TestCase):
     def test_executes_search_and_returns_standardized_result(self):
         request = task_request("SEARCH_LEADS", {
             "city": "Porto Alegre", "state": "RS", "category": "restaurantes",
-        })
+        }, authorization={"allow_credit_consumption": True})
         result = self.executor.execute(request).to_dict()
         self.assertEqual(result["task_id"], request["task_id"])
         self.assertEqual(result["type"], "SEARCH_LEADS")
@@ -146,6 +183,9 @@ class TaskExecutorTests(unittest.TestCase):
         self.assertTrue(result["started_at"])
         self.assertTrue(result["finished_at"])
         self.assertEqual(result["errors"], [])
+        self.assertEqual(result["result"]["leads"][0]["company_name"], "Restaurante Exemplo")
+        self.assertIsNone(result["error"])
+        self.assertTrue(self.integration.search_authorization)
 
     def test_v2_defaults_to_its_own_cdp_endpoint(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -161,25 +201,115 @@ class TaskExecutorTests(unittest.TestCase):
 
     def test_executes_open_company_and_generate_site(self):
         lead = V2Lead(company_name="Restaurante Exemplo").to_dict()
-        opened = self.executor.execute(task_request("OPEN_COMPANY", {"lead": lead}))
-        generated = self.executor.execute(task_request("GENERATE_SITE", {"lead": lead}))
+        opened = self.executor.execute(task_request(
+            "OPEN_COMPANY", {"lead": lead},
+            authorization={"allow_credit_consumption": True},
+        ))
+        generated = self.executor.execute(task_request(
+            "GENERATE_SITE", {"lead": lead},
+            authorization={
+                "allow_credit_consumption": True,
+                "allow_external_effects": True,
+            },
+        ))
         self.assertEqual(opened.status, TaskStatus.COMPLETED)
         self.assertEqual(opened.leads[0].phone, "5511999999999")
         self.assertEqual(generated.artifacts[0]["type"], "website")
         self.assertEqual(generated.status, TaskStatus.COMPLETED)
         self.assertEqual(generated.leads[0].website, "https://cliente.aivio.example")
+        self.assertTrue(self.integration.open_authorization)
+        self.assertTrue(self.integration.generate_authorization["allow_credit_consumption"])
+        self.assertTrue(self.integration.generate_authorization["allow_external_effects"])
 
     def test_generation_failures_are_explicit(self):
-        self.integration.generate_error = TimeoutError("generation timed out")
+        self.integration.generate_error = TimeoutError(
+            "generation timed out for https://aivio.example/?access_token=secret-value"
+        )
         lead = V2Lead(company_name="Restaurante Exemplo").to_dict()
-        result = self.executor.execute(task_request("GENERATE_SITE", {"lead": lead}))
-        self.assertEqual(result.status, TaskStatus.FAILED)
+        result = self.executor.execute(task_request(
+            "GENERATE_SITE", {"lead": lead},
+            authorization={
+                "allow_credit_consumption": True,
+                "allow_external_effects": True,
+            },
+        ))
+        self.assertEqual(result.status, TaskStatus.TIMEOUT)
         self.assertIn("generation timed out", result.errors[0])
+        self.assertEqual(result.error["code"], "task_timeout")
+        self.assertNotIn("secret-value", result.error["message"])
 
     def test_health_check_reports_actual_adapter_state(self):
         result = self.executor.execute(task_request("HEALTH_CHECK"))
         self.assertEqual(result.data["browser_connected"], True)
         self.assertEqual(result.data["aivio_available"], True)
+
+    def test_browser_tasks_are_serialized_across_executor_instances(self):
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+        first_request = task_request("HEALTH_CHECK")
+        second_request = task_request("HEALTH_CHECK")
+
+        class BlockingIntegration(FakeIntegration):
+            def browser_health(self):
+                first_entered.set()
+                release_first.wait(timeout=2)
+                return self.health
+
+        class SecondIntegration(FakeIntegration):
+            def browser_health(self):
+                second_entered.set()
+                return self.health
+
+        first = TaskExecutor(integration=BlockingIntegration())
+        second = TaskExecutor(integration=SecondIntegration())
+        threads = [
+            threading.Thread(target=first.execute, args=(first_request,)),
+            threading.Thread(target=second.execute, args=(second_request,)),
+        ]
+        threads[0].start()
+        self.assertTrue(first_entered.wait(timeout=1))
+        self.assertEqual(first.get_task_result(first_request["task_id"])["status"], "running")
+        threads[1].start()
+        queued_result = second.get_task_result(second_request["task_id"])
+        self.assertEqual(queued_result["status"], "queued")
+        self.assertEqual(queued_result["started_at"], "")
+        self.assertFalse(second_entered.wait(timeout=0.05))
+        release_first.set()
+        for thread in threads:
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+        self.assertTrue(second_entered.is_set())
+        self.assertEqual(second.get_task_result(second_request["task_id"])["status"], "completed")
+
+    def test_browser_execution_lock_serializes_separate_processes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            started_path = os.path.join(directory, "started")
+            acquired_path = os.path.join(directory, "acquired")
+            child_code = (
+                "import sys\n"
+                "from pathlib import Path\n"
+                "from scout.task_executor import _browser_execution_lock\n"
+                "Path(sys.argv[1]).touch()\n"
+                "with _browser_execution_lock('http://127.0.0.1:9223'):\n"
+                "    Path(sys.argv[2]).touch()\n"
+            )
+            process = None
+            with _browser_execution_lock("http://127.0.0.1:9223"):
+                process = subprocess.Popen(
+                    [sys.executable, "-c", child_code, started_path, acquired_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                deadline = time.monotonic() + 3
+                while not os.path.exists(started_path) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(os.path.exists(started_path))
+                time.sleep(0.1)
+                self.assertFalse(os.path.exists(acquired_path))
+            stdout, stderr = process.communicate(timeout=3)
+            self.assertEqual(process.returncode, 0, stderr.decode("utf-8"))
+            self.assertTrue(os.path.exists(acquired_path), stdout.decode("utf-8"))
 
 
 if __name__ == "__main__":

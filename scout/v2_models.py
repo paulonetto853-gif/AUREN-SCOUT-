@@ -15,9 +15,12 @@ class TaskType(str, Enum):
 
 
 class TaskStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
     COMPLETED = "completed"
     PARTIAL = "partial"
     FAILED = "failed"
+    TIMEOUT = "timeout"
 
 
 def utc_now() -> str:
@@ -135,6 +138,7 @@ class Task:
     type: TaskType
     payload: TaskPayload
     created_at: str = field(default_factory=utc_now)
+    authorization: dict[str, bool] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Any) -> Task:
@@ -159,8 +163,43 @@ class Task:
             datetime.fromisoformat(created_at.replace("Z", "+00:00"))
         except ValueError as error:
             raise ValueError("created_at deve ser uma data ISO-8601") from error
+        authorization = data.get("authorization", {})
+        if not isinstance(authorization, dict):
+            raise ValueError("authorization deve ser um objeto")
+        allowed_authorizations = {"allow_credit_consumption", "allow_external_effects"}
+        if set(authorization) - allowed_authorizations:
+            raise ValueError("authorization contém permissões desconhecidas")
+        if any(not isinstance(value, bool) for value in authorization.values()):
+            raise ValueError("permissões authorization devem ser booleanas")
         typed_payload = cls._validate_payload(task_type, payload)
-        return cls(task_id=task_id, type=task_type, payload=typed_payload, created_at=created_at)
+        cls._validate_authorization(task_type, payload, authorization)
+        return cls(
+            task_id=task_id,
+            type=task_type,
+            payload=typed_payload,
+            created_at=created_at,
+            authorization=dict(authorization),
+        )
+
+    @staticmethod
+    def _validate_authorization(
+        task_type: TaskType,
+        payload: dict[str, Any],
+        authorization: dict[str, bool],
+    ) -> None:
+        required: set[str] = set()
+        if task_type == TaskType.SEARCH_LEADS:
+            required.add("allow_credit_consumption")
+        elif task_type == TaskType.GENERATE_SITE:
+            required.update({"allow_credit_consumption", "allow_external_effects"})
+        elif task_type == TaskType.OPEN_COMPANY:
+            lead = payload.get("lead")
+            if isinstance(lead, dict) and not (lead.get("company_url") or lead.get("source_url")):
+                required.add("allow_credit_consumption")
+        missing = sorted(name for name in required if authorization.get(name) is not True)
+        if missing:
+            permissions = ", ".join(missing)
+            raise ValueError(f"authorization explícita necessária: {permissions}")
 
     @staticmethod
     def _validate_payload(task_type: TaskType, payload: dict[str, Any]) -> TaskPayload:
@@ -202,16 +241,26 @@ class TaskResult:
     artifacts: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    error: dict[str, str] | None = None
     started_at: str = field(default_factory=utc_now)
     finished_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
+        leads = [lead.to_dict() for lead in self.leads]
+        result = {
+            "data": self.data,
+            "leads": leads,
+            "artifacts": self.artifacts,
+            "warnings": self.warnings,
+        }
         return {
             "task_id": self.task_id,
             "type": self.type.value,
             "status": self.status.value,
+            "result": result,
+            "error": self.error,
             "data": self.data,
-            "leads": [lead.to_dict() for lead in self.leads],
+            "leads": leads,
             "artifacts": self.artifacts,
             "errors": self.errors,
             "warnings": self.warnings,

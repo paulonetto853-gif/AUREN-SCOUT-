@@ -119,7 +119,6 @@ class CliTests(unittest.TestCase):
             "title": "AIVIO Dashboard",
             "url": "https://aivio.example/dashboard",
             "inputs_before_open": [],
-            "second_text_input_without_placeholder": None,
             "category_button": {"text": "Escolha o ramo"},
             "dropdown_opened": True,
             "new_elements": [{"tag": "div", "text": "Restaurantes", "role": "option"}],
@@ -155,6 +154,53 @@ class CliTests(unittest.TestCase):
         printed = json.loads(print_result.call_args.args[0])
         self.assertEqual(printed["type"], "HEALTH_CHECK")
         self.assertEqual(printed["status"], "completed")
+
+    def test_task_command_returns_nonzero_for_timeout(self):
+        result = TaskResult(
+            task_id="12345678-1234-5678-1234-567812345678",
+            type=TaskType.HEALTH_CHECK,
+            status=TaskStatus.TIMEOUT,
+        )
+        with (
+            patch.object(
+                sys, "argv",
+                ["auren-scout", "task", "HEALTH_CHECK", "--payload", "{}"],
+            ),
+            patch("scout.cli.TaskExecutor") as executor_class,
+            patch("builtins.print"),
+        ):
+            executor_class.return_value.execute.return_value = result
+            with self.assertRaises(SystemExit) as context:
+                main()
+        self.assertEqual(context.exception.code, 1)
+
+    def test_task_command_forwards_explicit_authorization(self):
+        result = TaskResult(
+            task_id="12345678-1234-5678-1234-567812345678",
+            type=TaskType.SEARCH_LEADS,
+            status=TaskStatus.COMPLETED,
+        )
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "auren-scout",
+                    "task",
+                    "SEARCH_LEADS",
+                    "--authorization",
+                    '{"allow_credit_consumption":true}',
+                    "--payload",
+                    '{"city":"Porto Alegre","state":"RS","category":"restaurantes"}',
+                ],
+            ),
+            patch("scout.cli.TaskExecutor") as executor_class,
+            patch("builtins.print"),
+        ):
+            executor_class.return_value.execute.return_value = result
+            main()
+        request = executor_class.return_value.execute.call_args.args[0]
+        self.assertTrue(request["authorization"]["allow_credit_consumption"])
 
 
 if __name__ == "__main__":

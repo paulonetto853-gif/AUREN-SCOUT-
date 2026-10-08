@@ -5,8 +5,8 @@ from threading import Lock
 from urllib.parse import urlsplit
 
 from scout.service import ScoutService
-from scout.task_executor import TaskExecutor
-from scout.v2_models import Task
+from scout.task_executor import TaskExecutor, _safe_error_message
+from scout.v2_models import Task, TaskStatus
 
 logger = logging.getLogger("scout.api")
 MAX_REQUEST_BYTES = 64_000
@@ -43,7 +43,8 @@ def create_server(
             if path == "/health":
                 health = {
                     "status": "ok",
-                    "operational": True,
+                    "api_operational": True,
+                    "operational": False,
                     "provider": service.provider.__class__.__name__,
                 }
                 try:
@@ -52,11 +53,24 @@ def create_server(
                     logger.exception("Falha ao consultar estado do browser para health check")
                     health.update({
                         "browser_connected": False,
+                        "edge_connected": False,
+                        "edge_product": None,
                         "active_tab": None,
                         "aivio_available": False,
-                        "browser_error": str(error),
+                        "aivio_hostname": None,
+                        "aivio_url": None,
+                        "browser_error": _safe_error_message(error),
                     })
                 self._json(200, health)
+                return
+            task_prefix = "/tasks/"
+            task_id = path[len(task_prefix):] if path.startswith(task_prefix) else ""
+            if task_id and "/" not in task_id:
+                result = get_task_executor().get_task_result(task_id)
+                if result is not None:
+                    self._json(200, result)
+                else:
+                    self._json(404, {"error": "task_not_found"})
                 return
             prefix = "/scout/lead/"
             if path.startswith(prefix) and path[len(prefix):] and "/" not in path[len(prefix):]:
@@ -117,11 +131,17 @@ def create_server(
                 return
             try:
                 result = get_task_executor().execute(task)
+            except ValueError as error:
+                self._json(409, {"error": "duplicate_task", "message": str(error)})
+                return
             except Exception as error:
                 logger.exception("Falha ao iniciar tarefa recebida pela API")
                 self._json(503, {"error": "task_service_unavailable", "message": str(error)})
                 return
-            self._json(200, result.to_dict())
+            status_code = 504 if result.status == TaskStatus.TIMEOUT else (
+                500 if result.status == TaskStatus.FAILED else 200
+            )
+            self._json(status_code, result.to_dict())
 
         def log_message(self, format: str, *args: object) -> None:
             logger.info("API " + format, *args)

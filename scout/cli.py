@@ -33,6 +33,11 @@ def main() -> None:
     task.add_argument("type", choices=[task_type.value for task_type in TaskType])
     task.add_argument("--payload", required=True, help="objeto JSON com os dados da tarefa")
     task.add_argument("--task-id", default=None, help="UUID opcional da tarefa")
+    task.add_argument(
+        "--authorization",
+        default="{}",
+        help="objeto JSON de permissões explícitas para efeitos e consumo de créditos",
+    )
     args = parser.parse_args()
 
     if args.command is None:
@@ -73,16 +78,20 @@ def main() -> None:
             payload = json.loads(args.payload)
             if not isinstance(payload, dict):
                 raise ValueError("--payload deve conter um objeto JSON")
+            authorization = json.loads(args.authorization)
+            if not isinstance(authorization, dict):
+                raise ValueError("--authorization deve conter um objeto JSON")
             task_request = {
                 "task_id": args.task_id or str(uuid.uuid4()),
                 "type": args.type,
                 "payload": payload,
+                "authorization": authorization,
             }
             result = TaskExecutor().execute(task_request)
         except (ValueError, json.JSONDecodeError) as error:
             parser.error(str(error))
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
-        if result.status == TaskStatus.FAILED:
+        if result.status in {TaskStatus.FAILED, TaskStatus.TIMEOUT}:
             raise SystemExit(1)
         return
 

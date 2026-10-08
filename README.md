@@ -77,7 +77,7 @@ Para diagnosticar somente a página atualmente ativa da V2, sem clique, preenchi
 .\dist\AurenScout-V2.exe browser-inspect
 ```
 
-O comando retorna JSON com título, URL, texto visível (limitado a 12.000 caracteres), inputs visíveis não ocultos/não password, botões e links. Valores de campos identificados como sensíveis não são incluídos, e query strings/fragments de URLs são removidos.
+O comando retorna JSON com título, URL, texto visível (limitado a 12.000 caracteres), inputs visíveis não ocultos/não password, botões e links. Inputs incluem id, role, autocomplete, labels associados e atributos `data-*` não sensíveis; valores de campos identificados como sensíveis não são incluídos, e query strings/fragments de URLs são removidos.
 
 Para inspecionar os atributos dos campos e abrir apenas o dropdown “Escolha o ramo” para diagnóstico (sem selecionar opção ou acionar “Buscar”):
 
@@ -85,7 +85,9 @@ Para inspecionar os atributos dos campos e abrir apenas o dropdown “Escolha o 
 .\dist\AurenScout-V2.exe browser-inspect-category
 ```
 
-O comando retorna os inputs visíveis e seus atributos/labels, destaca o segundo input text sem placeholder, e compara os elementos DOM antes/depois de abrir o dropdown. A única interação é clicar exatamente uma vez no botão único “Escolha o ramo”; não preenche campos nem seleciona opções.
+O comando retorna os inputs visíveis e seus atributos/labels e compara os elementos DOM antes/depois de abrir o dropdown. A única interação é clicar exatamente uma vez no botão único “Escolha o ramo”; não preenche campos nem seleciona opções.
+
+O `BrowserController` também oferece primitivas explícitas reutilizáveis para clique simples/duplo, formulários, dropdowns, teclado/clipboard, navegação e abas, rolagem, espera por elemento/texto/URL/mudança, leitura de atributos/tabelas/listas, estado, downloads e upload de arquivo explicitamente solicitado. A resolução prioriza role/nome acessível, texto exato, labels/placeholder e atributos estáveis; alvos visíveis ambíguos falham. Classes CSS não são usadas como prioridade. Interações com pagamentos e WhatsApp são bloqueadas. Os fluxos V2 `SEARCH_LEADS`, `OPEN_COMPANY` e `GENERATE_SITE` usam essas primitivas. A ausência ou ambiguidade de um controle obrigatório falha explicitamente.
 
 ## Execução local no Windows
 
@@ -130,11 +132,13 @@ O script não cria túneis, não altera firewall e não autentica no AIVIO. O en
 
 O V2 recebe tarefas explícitas do AUREN, usa a aba ativa do Edge via CDP local e devolve JSON padronizado. O login no AIVIO continua manual. O V2 não decide quando gerar site nem executa ações comerciais.
 
-Antes de executar tarefas, inicie o Edge CDP como descrito acima, abra o AIVIO na aba ativa e faça login manualmente. A pesquisa exige campos acessíveis de cidade, estado e categoria, e o perfil/ação de geração só é aberto quando solicitado na tarefa. Os nomes e URLs de leads são observações do AIVIO; campos não disponíveis permanecem `null`. A paginação usa controles visíveis com rótulos acessíveis reconhecíveis, e a geração usa apenas ações visíveis identificadas por seus rótulos acessíveis.
+Antes de executar tarefas, inicie o Edge CDP como descrito acima, abra o AIVIO na aba ativa e faça login manualmente. A busca exige cidade e categoria acessíveis e um campo Estado identificável por label ou atributo estável observado. O campo de Estado ainda não foi confirmado no AIVIO real; se não for reconhecido de forma única, a busca falha antes de clicar em “Buscar”. A categoria é escolhida no dropdown customizado “Escolha o ramo”; o botão observado “Buscar” tem compatibilidade com o rótulo legado “Ver agora”. Os nomes e URLs de leads são observações do AIVIO; campos não disponíveis permanecem `null`. A paginação usa controles visíveis com rótulos acessíveis reconhecíveis e interrompe páginas repetidas. A geração usa apenas ações visíveis identificadas por rótulos observáveis.
 
 ### API de tarefas
 
-`POST /tasks` aceita `SEARCH_LEADS`, `OPEN_COMPANY`, `GENERATE_SITE` e `HEALTH_CHECK`. Todas as respostas contêm `task_id`, `type`, `status`, `data`, `leads`, `artifacts`, `errors`, `warnings`, `started_at` e `finished_at`.
+`POST /tasks` aceita `SEARCH_LEADS`, `OPEN_COMPANY`, `GENERATE_SITE` e `HEALTH_CHECK`. As respostas contêm `task_id`, `type`, `status`, `result`, `error`, `started_at` e `finished_at`, além dos campos de compatibilidade `data`, `leads`, `artifacts`, `errors` e `warnings`. O executor serializa as tarefas de browser entre processos que usam o mesmo CDP; tarefas aguardando esse lock ficam `queued` e, ao iniciar, passam a `running`. `GET /tasks/{task_id}` consulta o estado/resultados mantidos em memória durante a execução atual do processo. Um `task_id` não pode ser reutilizado pelo mesmo executor. Falhas retornam status HTTP de erro; timeouts retornam `timeout`/HTTP 504.
+
+O consumo de créditos e efeitos externos não são autorizados por padrão. Para `SEARCH_LEADS` e busca de empresa sem URL, `authorization.allow_credit_consumption` precisa ser `true`. Para `GENERATE_SITE`, `authorization.allow_credit_consumption` e `authorization.allow_external_effects` precisam ser `true`. Essas permissões devem ser fornecidas pelo AUREN em cada tarefa; tarefas sem autorização são rejeitadas.
 
 Exemplo `SEARCH_LEADS`:
 
@@ -142,6 +146,9 @@ Exemplo `SEARCH_LEADS`:
 {
   "task_id": "2c6b72b1-68a4-4a51-bf59-68aa96832ad5",
   "type": "SEARCH_LEADS",
+  "authorization": {
+    "allow_credit_consumption": true
+  },
   "payload": {
     "city": "Porto Alegre",
     "state": "RS",
@@ -157,18 +164,20 @@ Exemplo `SEARCH_LEADS`:
 Exemplos de execução local (substitua o lead de `OPEN_COMPANY`/`GENERATE_SITE` por um lead observado no AIVIO):
 
 ```powershell
-python -m scout task SEARCH_LEADS --payload '{"city":"Porto Alegre","state":"RS","category":"restaurantes","quantity":20,"filters":{}}'
+python -m scout task SEARCH_LEADS --authorization '{"allow_credit_consumption":true}' --payload '{"city":"Porto Alegre","state":"RS","category":"restaurantes","quantity":20,"filters":{}}'
 python -m scout task OPEN_COMPANY --payload '{"lead":{"company_name":"Restaurante Exemplo","city":"Porto Alegre","state":"RS","company_url":"https://app.aivio.example/company/123"}}'
-python -m scout task GENERATE_SITE --payload '{"lead":{"company_name":"Restaurante Exemplo","city":"Porto Alegre","state":"RS","company_url":"https://app.aivio.example/company/123"}}'
+python -m scout task GENERATE_SITE --authorization '{"allow_credit_consumption":true,"allow_external_effects":true}' --payload '{"lead":{"company_name":"Restaurante Exemplo","city":"Porto Alegre","state":"RS","company_url":"https://app.aivio.example/company/123"}}'
 ```
 
-O comando `HEALTH_CHECK` pode ser executado via `/tasks`; `GET /health` também inclui `browser_connected`, `active_tab` e `aivio_available`. O fechamento do Edge/AIVIO é reportado como indisponibilidade e não derruba a API.
+O comando `HEALTH_CHECK` pode ser executado via `/tasks`; `GET /health` informa separadamente `api_operational`, `browser_connected`/`edge_connected`, `active_tab`, `aivio_available`, `aivio_hostname`, `aivio_url` e `operational`. A API pode estar operante mesmo quando Edge/AIVIO não está; nesse caso, `operational` será `false`. O fechamento do Edge/AIVIO é reportado como indisponibilidade e não derruba a API.
 
-Para executar uma tarefa via HTTP, envie o objeto JSON acima a `http://127.0.0.1:8080/tasks`. Os erros de execução retornam um resultado com `status: "failed"` e descrição em `errors`; uma busca que não alcance a quantidade pedida retorna `partial`.
+Para executar uma tarefa via HTTP, envie o objeto JSON acima a `http://127.0.0.1:8080/tasks`. Falhas retornam `status: "failed"` com `error.code`/`error.message` e HTTP 500; timeouts retornam `status: "timeout"` e HTTP 504. Uma busca que não alcance a quantidade pedida retorna `partial`.
+
+Consulte uma tarefa, inclusive enquanto aguarda execução, com `GET http://127.0.0.1:8080/tasks/{task_id}`. Tarefas desconhecidas retornam HTTP 404; IDs duplicados retornam HTTP 409.
 
 `SCOUT_AIVIO_GENERATION_TIMEOUT_MS` controla o timeout de espera por um sinal de conclusão (padrão 120000 ms; intervalo permitido de 1000 a 600000). A geração retorna artefatos observados como website ou URL PDF; um caminho local só será informado quando realmente disponível.
 
-Como o AIVIO não fornece neste repositório um contrato estável de DOM/URL, a interação usa rótulos acessíveis e estrutura HTML visível. A geração não foi validada contra uma sessão AIVIO real neste ambiente: se o controle acessível ou o sinal de sucesso não for reconhecido, a tarefa falha explicitamente ou retorna aviso, em vez de inventar um resultado.
+Como o AIVIO não fornece neste repositório um contrato estável de DOM/URL, a interação usa rótulos acessíveis e estrutura HTML semântica visível. A extração de resultados usa roles `article`/`listitem`; se não estiverem presentes, não há evidência de resultado estruturado. A geração não foi validada contra uma sessão AIVIO real neste ambiente. Não foram executadas buscas reais nem geração de sites; esses fluxos foram testados com mocks. Se o controle acessível, os roles ou o sinal de sucesso não forem reconhecidos, a tarefa falha explicitamente ou retorna aviso, em vez de inventar um resultado.
 
 ## Configuração
 
@@ -207,6 +216,10 @@ Retorna o registro completo que foi armazenado durante a execução atual do pro
 ### `POST /tasks`
 
 Executa uma tarefa V2 estruturada. Os tipos aceitos são `SEARCH_LEADS`, `OPEN_COMPANY`, `GENERATE_SITE` e `HEALTH_CHECK`. A rota é adicional; `/scout/search` e `/scout/lead/:id` permanecem disponíveis com seus contratos atuais.
+
+### `GET /tasks/{task_id}`
+
+Retorna o estado e o resultado da tarefa armazenados em memória neste processo. Os estados `queued` e `running` podem ser consultados enquanto outra tarefa usa o navegador; `completed`, `partial`, `failed` e `timeout` representam estados terminais. A consulta retorna HTTP 404 se o ID não for conhecido.
 
 Exemplo de consulta:
 
@@ -247,22 +260,24 @@ Os testes unitários simulam o transporte CDP e não exigem Edge ativo. Para ver
 
 O teste de empacotamento executa quando PyInstaller está instalado (`python3 -m pip install -r requirements-build.txt`); no Windows, ele verifica que o artefato `.exe` é gerado.
 
-Os testes mockados da integração AIVIO rodam na mesma suíte. O teste real, que preenche a cidade e clica para pesquisar, é opt-in e requer uma sessão AIVIO já aberta e autenticada manualmente no Edge local:
+Os testes mockados da integração AIVIO rodam na mesma suíte. O teste real, que preenche a cidade e clica para pesquisar (podendo consumir créditos), exige opt-in separado e uma sessão AIVIO já aberta e autenticada manualmente no Edge local:
 
 ```powershell
 $env:AIVIO_LIVE_TEST = "1"
 $env:AIVIO_TEST_CITY = "Porto Alegre"
+$env:AIVIO_ALLOW_CREDIT_CONSUMPTION = "1"
 python -m unittest discover -s tests -p "test_aivio_live.py" -v
 ```
 
-Acrescente `$env:AIVIO_OPEN_FIRST_COMPANY = "1"` para autorizar explicitamente a abertura do primeiro perfil encontrado.
+Acrescente `$env:AIVIO_OPEN_FIRST_COMPANY = "1"` para abrir o primeiro perfil encontrado. Não configure essas variáveis sem autorização explícita para uma busca real.
 
-Para executar uma tarefa V2 real específica, configure `SCOUT_AIVIO_LIVE_TASK` e `SCOUT_AIVIO_LIVE_PAYLOAD` e habilite `SCOUT_AIVIO_LIVE_TEST=1`. Use um lead obtido do AIVIO para `OPEN_COMPANY` e `GENERATE_SITE`; para permitir a geração com efeito externo, configure também `SCOUT_AIVIO_LIVE_ALLOW_GENERATE=1`. O teste continua opt-in e não usa AIVIO real na suíte normal:
+Para executar uma tarefa V2 real específica, configure `SCOUT_AIVIO_LIVE_TASK` e `SCOUT_AIVIO_LIVE_PAYLOAD` e habilite `SCOUT_AIVIO_LIVE_TEST=1`. `SEARCH_LEADS` e `OPEN_COMPANY` sem URL exigem também `SCOUT_AIVIO_LIVE_ALLOW_CREDIT_CONSUMPTION=1`. `GENERATE_SITE` exige adicionalmente `SCOUT_AIVIO_LIVE_ALLOW_EXTERNAL_EFFECTS=1`. O teste é ignorado se as permissões específicas não estiverem definidas:
 
 ```powershell
 $env:SCOUT_AIVIO_LIVE_TEST = "1"
 $env:SCOUT_AIVIO_LIVE_TASK = "SEARCH_LEADS"
 $env:SCOUT_AIVIO_LIVE_PAYLOAD = '{"city":"Porto Alegre","state":"RS","category":"restaurantes","quantity":5,"filters":{}}'
+$env:SCOUT_AIVIO_LIVE_ALLOW_CREDIT_CONSUMPTION = "1"
 python -m unittest discover -s tests -p "test_aivio_live.py" -v
 ```
 

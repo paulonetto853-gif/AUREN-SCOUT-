@@ -1,347 +1,276 @@
 import unittest
-import re
 
-from scout.aivio import (
-    AivioIntegration,
-    CITY_INPUTS_SCRIPT,
-    DETAIL_LINKS_SCRIPT,
-    GENERATION_ACTIONS_SCRIPT,
-    PAGE_TEXT_SCRIPT,
-    PAGINATION_BUTTONS_SCRIPT,
-    SEARCH_RESULTS_SCRIPT,
-)
-
-
-class FakeLocator:
-    def __init__(self, *, items=None, visible=True, click_action=None):
-        self.items = items or []
-        self.visible = visible
-        self.click_action = click_action
-        self.filled = None
-        self.clicked = False
-        self.fills = {}
-
-    @property
-    def first(self):
-        return self
-
-    def count(self):
-        return len(self.items) if self.items else int(self.visible)
-
-    def nth(self, index):
-        self.index = index
-        return self
-
-    def fill(self, value):
-        self.filled = value
-        self.fills[getattr(self, "index", 0)] = value
-
-    def select_option(self, *, label):
-        self.selected_label = label
-
-    def click(self):
-        self.clicked = True
-        if self.click_action:
-            self.click_action()
-
-    def evaluate_all(self, script):
-        self.asserted_script = script
-        return self.items
+from scout.aivio import AivioIntegration
+from scout.v2_models import V2Lead
 
 
 class FakePage:
-    def __init__(self, *, url="https://app.aivio.example/search", title="AIVIO - Pesquisa"):
-        self.url = url
-        self._title = title
-        self.body_text = "Pesquisa de empresas"
-        self.city_input = FakeLocator(items=[{
-            "index": 0,
-            "tagName": "INPUT",
-            "visible": True,
-            "disabled": False,
-            "descriptors": "cidade",
-        }, {
-            "index": 1,
-            "tagName": "INPUT",
-            "visible": True,
-            "disabled": False,
-            "descriptors": "estado uf",
-        }, {
-            "index": 2,
-            "tagName": "INPUT",
-            "visible": True,
-            "disabled": False,
-            "descriptors": "categoria segmento",
-        }])
-        self.search_button = FakeLocator(click_action=self._complete_search)
-        self.generation_button = FakeLocator(click_action=self._complete_generation)
-        self.next_button = FakeLocator(click_action=self._complete_next_page)
-        self.pagination_buttons = []
-        self.search_results = [{
-            "title": "Restaurante Exemplo",
-            "text": "Restaurante Exemplo\nCentro, Porto Alegre",
-            "url": "https://app.aivio.example/company/123",
-            "elementType": "card",
-        }]
-        self.detail_links = [{"title": "Site", "url": "https://example.invalid/"}]
-        self.navigated_to = None
+    def __init__(self):
+        self.url = "https://app.aivio.example/search"
+        self._title = "AIVIO - Pesquisa"
 
     def title(self):
         return self._title
 
-    def locator(self, selector):
-        if selector not in {
-            'input:not([type="hidden"]), textarea',
-            'input:not([type="hidden"]), textarea, select',
-        }:
-            raise AssertionError(f"unexpected selector: {selector}")
-        return self.city_input
-
-    def evaluate(self, script, *args, **kwargs):
-        if script == PAGE_TEXT_SCRIPT:
-            return self.body_text
-        if script == SEARCH_RESULTS_SCRIPT:
-            return self.search_results
-        if script == DETAIL_LINKS_SCRIPT:
-            return list(self.detail_links)
-        if script == PAGINATION_BUTTONS_SCRIPT:
-            return self.pagination_buttons
-        if script == GENERATION_ACTIONS_SCRIPT:
-            return [{
-                "role": "button",
-                "visible": self.generation_button.visible,
-                "disabled": False,
-                "label": "Gerar site",
-            }]
-        if script.startswith("() => Array.from(document.querySelectorAll('button"):
-            return []
-        raise AssertionError(f"unexpected page script: {script}")
-
-    def get_by_role(self, role, name):
-        if role not in {"button", "link"}:
-            raise AssertionError(f"unexpected role: {role}")
-        if re.search(r"next|pr[oó]xima", name.pattern, re.I):
-            return self.next_button
-        if re.search(r"gerar|criar", name.pattern, re.I):
-            self.generation_button_name = name
-            return self.generation_button
-        self.search_button_name = name
-        return self.search_button
-
-    def get_by_text(self, text, exact):
-        if (text, exact) != ("Ver agora", True):
-            raise AssertionError("unexpected text locator")
-        return FakeLocator(visible=False)
-
-    def wait_for_function(self, expression, **kwargs):
-        self.waited_for_change = (expression, kwargs)
-        if getattr(self, "timeout_wait", False):
-            raise TimeoutError("condition timed out")
-
-    def wait_for_load_state(self, state):
-        self.waited_for_load = state
-
-    def goto(self, url, wait_until):
-        self.navigated_to = (url, wait_until)
-        self.url = url
-        self._title = "Restaurante Exemplo | AIVIO"
-        self.body_text = "Restaurante Exemplo\nEndereço: Rua Central, 10\nTelefone: +55 51 0000-0000"
-
-    def _complete_search(self):
-        self.body_text = "Resultados\nRestaurante Exemplo\nCentro, Porto Alegre"
-
-    def _complete_generation(self):
-        self.body_text += "\nSite gerado com sucesso"
-        self.detail_links.append({"title": "Site gerado", "url": "https://restaurante.aivio.site/"})
-
-    def _complete_next_page(self):
-        self.search_results = [{
-            "title": "Bistro Exemplo",
-            "text": "Bistro Exemplo\nPorto Alegre",
-            "url": "https://app.aivio.example/company/456",
-        }]
-        self.pagination_buttons = []
-        self.body_text += "\nBistro Exemplo"
-
 
 class FakeBrowserController:
-    def __init__(self, page=None, cdp_endpoint="http://127.0.0.1:9223"):
-        self.page = page
-        self.cdp_endpoint = cdp_endpoint
+    def __init__(self, *, state_inputs=None, buttons=None, pages=None):
+        self.page = FakePage()
+        self.cdp_endpoint = "http://127.0.0.1:9223"
+        self.state_inputs = state_inputs if state_inputs is not None else [{
+            "tag": "input",
+            "type": "text",
+            "name": "state",
+            "labels": ["Estado"],
+            "data_attributes": {},
+        }]
+        self.buttons = buttons if buttons is not None else [
+            {"text": "Escolha o ramo", "disabled": False},
+            {"text": "Buscar", "disabled": False},
+        ]
+        self.pages = pages if pages is not None else [[{
+            "title": "Restaurante Exemplo",
+            "text": "Restaurante Exemplo\nCentro, Porto Alegre\nTelefone: (51) 99999-0000",
+            "links": [{
+                "text": "Empresa",
+                "url": "https://app.aivio.example/company/123",
+            }],
+            "source_url": self.page.url,
+        }]]
+        self.page_index = 0
+        self.operations = []
+        self.text = "Pesquisa de empresas"
+        self.links = []
+        self.fail_wait = False
 
     def getActivePage(self):
         return self.page
 
+    def connect(self, **kwargs):
+        self.operations.append(("connect", kwargs))
+
+    def active_tab(self):
+        return {"title": self.page.title(), "url": self.page.url}
+
+    def read_inputs(self):
+        return [
+            {"tag": "input", "type": "text", "placeholder": "Digite uma cidade..."},
+            *self.state_inputs,
+        ]
+
+    def read_buttons(self):
+        return list(self.buttons)
+
+    def fill_input(self, value, **target):
+        self.operations.append(("fill", value, target))
+        return {"filled": True, "value_changed": True}
+
+    def select_native_option(self, value, **target):
+        self.operations.append(("select_native", value, target))
+        return {"selected": True, "value": value}
+
+    def open_dropdown(self, trigger, **target):
+        self.operations.append(("open_dropdown", trigger, target))
+        return {"opened": True, "kind": "custom"}
+
+    def select_option(self, value):
+        self.operations.append(("select_option", value))
+        return {"selected": True, "value_changed": True}
+
+    def capture_page_state(self):
+        return {"url": self.page.url, "text_hash": str(self.page_index)}
+
+    def click_button(self, *, text, **target):
+        self.operations.append(("click_button", text))
+        if text in {"Buscar", "Ver agora"}:
+            self.page_index = min(self.page_index + 1, len(self.pages))
+            self.text = "Resultados de busca"
+        elif text in {"Next", "Próxima"}:
+            self.page_index = min(self.page_index + 1, len(self.pages) - 1)
+        elif "site" in text.casefold():
+            self.text = "Site gerado com sucesso"
+            self.links.append({
+                "text": "Site gerado",
+                "href": "https://restaurante.aivio.site/",
+            })
+        return {"clicked": True}
+
+    def wait_for_page_change(self, before, timeout_ms=5_000):
+        self.operations.append(("wait_for_page_change", timeout_ms))
+        if self.fail_wait:
+            raise TimeoutError("A página não mudou")
+        return True
+
+    def read_semantic_records(self):
+        index = min(self.page_index, len(self.pages) - 1)
+        return self.pages[index]
+
+    def navigate(self, url):
+        self.operations.append(("navigate", url))
+        self.page.url = url
+        self.page._title = "Restaurante Exemplo | AIVIO"
+        self.text = "Restaurante Exemplo\nEndereço: Rua Central, 10\nTelefone: +55 51 0000-0000"
+        self.links = [{"text": "Site", "href": "https://example.invalid/"}]
+        return {"url": url}
+
+    def read_visible_text(self):
+        return self.text
+
+    def read_links(self):
+        return list(self.links)
+
 
 class AivioIntegrationTests(unittest.TestCase):
     def setUp(self):
-        self.page = FakePage()
-        self.controller = FakeBrowserController(self.page)
+        self.controller = FakeBrowserController()
         self.integration = AivioIntegration(self.controller)
 
-    def test_search_fills_city_clicks_ver_agora_and_returns_results(self):
-        result = self.integration.search_city("  Porto Alegre  ")
+    def test_search_requires_explicit_credit_authorization(self):
+        with self.assertRaisesRegex(PermissionError, "autorização explícita"):
+            self.integration.search_leads("Porto Alegre", "RS", "restaurantes")
+        self.assertFalse(any(item[0] == "click_button" for item in self.controller.operations))
 
-        self.assertEqual(self.page.city_input.filled, "Porto Alegre")
-        self.assertEqual(self.page.city_input.index, 0)
-        self.assertTrue(self.page.search_button.clicked)
-        self.assertIn("Ver agora", self.page.search_button_name.pattern)
-        self.assertEqual(self.page.waited_for_change[1]["timeout"], 20_000)
-        self.assertEqual(result, {
-            "status": "completed",
-            "city": "Porto Alegre",
-            "results": [{
-                "title": "Restaurante Exemplo",
-                "text": "Restaurante Exemplo\nCentro, Porto Alegre",
-                "url": "https://app.aivio.example/company/123",
-                "elementType": "card",
-            }],
-            "companyDetails": None,
-        })
-
-    def test_search_leads_applies_all_task_fields_and_normalizes_results(self):
+    def test_search_uses_confirmed_control_names_and_returns_normalized_leads(self):
         result = self.integration.search_leads(
-            "Porto Alegre", "RS", "restaurantes", quantity=1,
-        )
-        self.assertEqual(
-            self.page.city_input.fills,
-            {0: "Porto Alegre", 1: "RS", 2: "restaurantes"},
+            "Porto Alegre",
+            "RS",
+            "restaurantes",
+            quantity=1,
+            allow_credit_consumption=True,
         )
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["results"][0]["company_name"], "Restaurante Exemplo")
-        self.assertEqual(result["results"][0]["city"], "Porto Alegre")
+        self.assertEqual(result["results"][0]["phone"], "51999990000")
+        self.assertEqual(result["results"][0]["company_url"], "https://app.aivio.example/company/123")
+        self.assertIn(("fill", "Porto Alegre", {"placeholder": "Digite uma cidade..."}),
+                      self.controller.operations)
+        self.assertIn(("fill", "RS", {"label": "Estado"}), self.controller.operations)
+        self.assertIn(("open_dropdown", "Escolha o ramo", {}), self.controller.operations)
+        self.assertIn(("select_option", "restaurantes"), self.controller.operations)
+        self.assertIn(("click_button", "Buscar"), self.controller.operations)
+        self.assertTrue(any(item[0] == "wait_for_page_change" for item in self.controller.operations))
 
-    def test_search_city_supports_structured_v2_arguments_without_breaking_legacy(self):
-        result = self.integration.search_city(
-            "Porto Alegre", state="RS", category="restaurantes", quantity=1,
-        )
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["requested_quantity"], 1)
-        self.assertIsNone(result["companyDetails"])
-
-    def test_search_leads_paginates_until_requested_quantity(self):
-        self.page.pagination_buttons = [{
-            "index": 0, "visible": True, "disabled": False, "label": "Next",
+    def test_native_state_select_uses_confirmed_stable_name(self):
+        self.controller.state_inputs = [{
+            "tag": "select",
+            "type": "select",
+            "name": "state",
+            "labels": [],
+            "data_attributes": {},
         }]
-        result = self.integration.search_leads("Porto Alegre", "RS", "restaurantes", quantity=2)
-        self.assertEqual(len(result["results"]), 2)
-        self.assertTrue(self.page.next_button.clicked)
-        self.assertEqual(result["status"], "completed")
+        self.integration.search_leads(
+            "Porto Alegre", "RS", "restaurantes", quantity=1,
+            allow_credit_consumption=True,
+        )
+        self.assertIn(
+            ("select_native", "RS", {"name": "state"}),
+            self.controller.operations,
+        )
 
-    def test_open_company_updates_lead_with_page_observations(self):
-        from scout.v2_models import V2Lead
+    def test_missing_state_selector_fails_before_search(self):
+        self.controller.state_inputs = []
+        with self.assertRaisesRegex(RuntimeError, "Estado sem atributo estável confirmado"):
+            self.integration.search_leads(
+                "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
+            )
+        self.assertFalse(any(item[0] == "click_button" for item in self.controller.operations))
 
+    def test_ambiguous_state_selector_fails_explicitly(self):
+        self.controller.state_inputs = [
+            {"name": "state", "labels": [], "data_attributes": {}},
+            {"aria_label": "Estado", "labels": [], "data_attributes": {}},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "Estado ambíguo"):
+            self.integration.search_leads(
+                "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
+            )
+
+    def test_category_and_search_controls_must_be_unique(self):
+        self.controller.buttons.append({"text": "Buscar", "disabled": False})
+        with self.assertRaisesRegex(RuntimeError, "Buscar.*ambíguo"):
+            self.integration.search_leads(
+                "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
+            )
+
+    def test_missing_category_control_fails_before_form_interaction(self):
+        self.controller.buttons = [{"text": "Buscar", "disabled": False}]
+        with self.assertRaisesRegex(RuntimeError, 'Botão "Escolha o ramo" não encontrado'):
+            self.integration.search_leads(
+                "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
+            )
+        self.assertFalse(any(item[0] == "fill" for item in self.controller.operations))
+
+    def test_repeated_pages_stop_pagination(self):
+        self.controller.pages = [[{
+            "title": "Restaurante Exemplo",
+            "text": "Restaurante Exemplo",
+            "links": [],
+            "source_url": self.controller.page.url,
+        }]]
+        self.controller.buttons.append({"text": "Next", "disabled": False})
+        result = self.integration.search_leads(
+            "Porto Alegre", "RS", "restaurantes", quantity=2,
+            allow_credit_consumption=True,
+        )
+        self.assertEqual(len(result["results"]), 1)
+        self.assertTrue(any("repetiu resultados" in warning for warning in result["warnings"]))
+
+    def test_page_change_timeout_is_not_reported_as_success(self):
+        self.controller.fail_wait = True
+        with self.assertRaisesRegex(TimeoutError, "página não mudou"):
+            self.integration.search_leads(
+                "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
+            )
+
+    def test_open_company_uses_controller_navigation_and_same_origin(self):
         lead = V2Lead(
             company_name="Restaurante Exemplo",
-            city="Porto Alegre",
-            state="RS",
             company_url="https://app.aivio.example/company/123",
         )
         updated = self.integration.open_company(lead)
-        self.assertEqual(updated.phone, "+555100000000")
+        self.assertIn(
+            ("navigate", "https://app.aivio.example/company/123"),
+            self.controller.operations,
+        )
         self.assertEqual(updated.address, "Rua Central, 10")
-        self.assertEqual(updated.website, "https://example.invalid/")
-        self.assertEqual(updated.company_url, "https://app.aivio.example/company/123")
+        with self.assertRaisesRegex(ValueError, "mesma origem"):
+            self.integration.open_company(V2Lead(
+                company_name="Externa",
+                company_url="https://outside.example/company/1",
+            ))
 
-    def test_generate_site_waits_for_a_success_signal_and_returns_artifact(self):
-        from scout.v2_models import V2Lead
-
+    def test_open_company_search_requires_credit_authorization(self):
         lead = V2Lead(
             company_name="Restaurante Exemplo",
             city="Porto Alegre",
             state="RS",
-            company_url="https://app.aivio.example/company/123",
+            category="restaurantes",
         )
-        updated, artifacts, warnings = self.integration.generate_site(lead)
-        self.assertEqual(updated.company_name, "Restaurante Exemplo")
-        self.assertEqual(artifacts, [{
-            "type": "website",
-            "url": "https://restaurante.aivio.site/",
-            "title": "Site gerado",
-        }])
-        self.assertEqual(warnings, [])
-        self.assertEqual(self.page.waited_for_change[1]["timeout"], 120_000)
+        with self.assertRaisesRegex(PermissionError, "autorização explícita"):
+            self.integration.open_company(lead)
 
-    def test_generate_site_propagates_condition_timeout(self):
-        from scout.v2_models import V2Lead
+    def test_open_company_search_requires_category_before_form_interaction(self):
+        lead = V2Lead(company_name="Restaurante Exemplo", city="Porto Alegre", state="RS")
+        with self.assertRaisesRegex(RuntimeError, "exige category"):
+            self.integration.open_company(lead, allow_credit_consumption=True)
+        self.assertFalse(any(item[0] == "fill" for item in self.controller.operations))
 
-        self.page.timeout_wait = True
+    def test_site_generation_requires_both_authorizations_and_observes_artifact(self):
         lead = V2Lead(
             company_name="Restaurante Exemplo",
             company_url="https://app.aivio.example/company/123",
         )
-        with self.assertRaisesRegex(TimeoutError, "condition timed out"):
+        self.controller.buttons.append({"text": "Gerar site", "disabled": False})
+        with self.assertRaises(PermissionError):
             self.integration.generate_site(lead)
-
-    def test_open_first_company_reads_its_page_and_links(self):
-        result = self.integration.search_city("Porto Alegre", open_first_company=True)
-
-        self.assertEqual(
-            self.page.navigated_to,
-            ("https://app.aivio.example/company/123", "domcontentloaded"),
+        updated, artifacts, warnings = self.integration.generate_site(
+            lead,
+            allow_credit_consumption=True,
+            allow_external_effects=True,
         )
-        self.assertEqual(result["companyDetails"], {
-            "title": "Restaurante Exemplo | AIVIO",
-            "url": "https://app.aivio.example/company/123",
-            "text": "Restaurante Exemplo\nEndereço: Rua Central, 10\nTelefone: +55 51 0000-0000",
-            "links": [{"title": "Site", "url": "https://example.invalid/"}],
-        })
-
-    def test_rejects_empty_city_and_non_aivio_page(self):
-        with self.assertRaisesRegex(ValueError, "cidade"):
-            self.integration.search_city(" ")
-        self.page._title = "Company Directory"
-        self.page.url = "https://directory.example/search"
-        with self.assertRaisesRegex(RuntimeError, "não foi reconhecida como AIVIO"):
-            self.integration.search_city("Porto Alegre")
-
-    def test_rejects_missing_page_city_field_or_search_button(self):
-        self.controller.page = None
-        with self.assertRaisesRegex(RuntimeError, "Nenhuma aba ativa"):
-            self.integration.search_city("Porto Alegre")
-
-        self.controller.page = self.page
-        self.page.city_input.items = [{"index": 0, "visible": True, "disabled": False, "descriptors": "busca"}]
-        with self.assertRaisesRegex(RuntimeError, "Campo de cidade"):
-            self.integration.search_city("Porto Alegre")
-
-        self.page.city_input.items = [{
-            "index": 0, "visible": True, "disabled": False, "descriptors": "cidade",
-        }]
-        self.page.search_button.visible = False
-        with self.assertRaisesRegex(RuntimeError, 'Ver agora'):
-            self.integration.search_city("Porto Alegre")
-
-    def test_company_navigation_is_restricted_to_same_origin(self):
-        with self.assertRaisesRegex(ValueError, "mesma origem"):
-            self.integration.read_company_page(self.page, "https://outside.example/company")
-        with self.assertRaisesRegex(ValueError, "mesma origem"):
-            self.integration.read_company_page(self.page, "file:///C:/Users/user/file")
-        self.assertIsNone(self.page.navigated_to)
-
-    def test_open_first_company_skips_external_result_links(self):
-        self.page.search_results = [
-            {"title": "Site externo", "url": "https://company.example/"},
-            {"title": "Perfil AIVIO", "url": "https://app.aivio.example/company/123"},
-        ]
-
-        result = self.integration.search_city("Porto Alegre", open_first_company=True)
-
-        self.assertEqual(
-            self.page.navigated_to,
-            ("https://app.aivio.example/company/123", "domcontentloaded"),
-        )
-        self.assertEqual(result["companyDetails"]["title"], "Restaurante Exemplo | AIVIO")
-
-    def test_requires_the_exact_loopback_cdp_endpoint(self):
-        with self.assertRaisesRegex(ValueError, "127.0.0.1:9223"):
-            AivioIntegration(FakeBrowserController(self.page, "http://localhost:9223"))
-        with self.assertRaisesRegex(ValueError, "127.0.0.1:9223"):
-            AivioIntegration(FakeBrowserController(self.page, "http://127.0.0.1:9222"))
-
-    def test_city_input_metadata_does_not_return_input_values(self):
-        self.assertNotIn("element.value", CITY_INPUTS_SCRIPT)
-        self.assertIn("descriptors", CITY_INPUTS_SCRIPT)
+        self.assertTrue(updated.company_name)
+        self.assertEqual(artifacts[0]["url"], "https://restaurante.aivio.site/")
+        self.assertEqual(warnings, [])
 
 
 if __name__ == "__main__":
