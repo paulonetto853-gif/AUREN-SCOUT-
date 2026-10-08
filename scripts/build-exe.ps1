@@ -5,6 +5,8 @@ if ($env:OS -ne 'Windows_NT') {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$outputDirectory = Join-Path $repoRoot 'dist'
+$expectedExecutable = Join-Path $outputDirectory 'AurenScout-V2.exe'
 Push-Location $repoRoot
 try {
     if (-not (Get-Command py -ErrorAction SilentlyContinue)) {
@@ -16,7 +18,7 @@ try {
         throw 'Falha ao instalar as dependencias de build.'
     }
 
-    New-Item -ItemType Directory -Path 'dist' -Force | Out-Null
+    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     New-Item -ItemType Directory -Path 'build/pyinstaller' -Force | Out-Null
     & py -m PyInstaller `
         --noconfirm `
@@ -24,7 +26,7 @@ try {
         --onefile `
         --console `
         --name AurenScout-V2 `
-        --distpath dist `
+        --distpath $outputDirectory `
         --workpath build/pyinstaller `
         --specpath build/pyinstaller `
         --paths . `
@@ -34,12 +36,11 @@ try {
         throw 'PyInstaller falhou ao empacotar o Scout.'
     }
 
-    $executable = Join-Path $repoRoot 'dist\AurenScout-V2.exe'
-    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-        throw "Build terminou sem gerar o executavel esperado: $executable"
+    if (-not (Test-Path -LiteralPath $expectedExecutable -PathType Leaf)) {
+        throw "Build terminou sem gerar o executavel esperado: $expectedExecutable"
     }
 
-    $file = Get-Item -LiteralPath $executable
+    $file = Get-Item -LiteralPath $expectedExecutable
     Write-Output "Build concluido: $($file.FullName) ($($file.Length) bytes)"
 }
 finally {

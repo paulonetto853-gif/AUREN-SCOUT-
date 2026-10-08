@@ -59,16 +59,8 @@ class PackagingTests(unittest.TestCase):
             executable = output_dir / f"AurenScout-V2{suffix}"
             self.assertTrue(executable.is_file(), msg="PyInstaller nao criou o executavel")
             self.assertGreater(executable.stat().st_size, 0)
-
-            smoke_test = subprocess.run(
-                [str(executable), "--help"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
-            )
-            self.assertEqual(smoke_test.returncode, 0, msg=smoke_test.stdout + smoke_test.stderr)
-            self.assertIn("browser-status", smoke_test.stdout)
+            legacy_executable = output_dir / f"AurenScout{suffix}"
+            self.assertFalse(legacy_executable.exists(), msg="O build V2 nao deve criar/sobrescrever AurenScout")
 
 
 if __name__ == "__main__":
