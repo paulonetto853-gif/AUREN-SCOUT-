@@ -79,6 +79,14 @@ Para diagnosticar somente a página atualmente ativa da V2, sem clique, preenchi
 
 O comando retorna JSON com título, URL, texto visível (limitado a 12.000 caracteres), inputs visíveis não ocultos/não password, botões e links. Valores de campos identificados como sensíveis não são incluídos, e query strings/fragments de URLs são removidos.
 
+Para inspecionar os atributos dos campos e abrir apenas o dropdown “Escolha o ramo” para diagnóstico (sem selecionar opção ou acionar “Buscar”):
+
+```powershell
+.\dist\AurenScout-V2.exe browser-inspect-category
+```
+
+O comando retorna os inputs visíveis e seus atributos/labels, destaca o segundo input text sem placeholder, e compara os elementos DOM antes/depois de abrir o dropdown. A única interação é clicar exatamente uma vez no botão único “Escolha o ramo”; não preenche campos nem seleciona opções.
+
 ## Execução local no Windows
 
 O comando que controla o Edge precisa rodar no mesmo Windows do navegador. Um terminal do GitHub Codespaces, WSL ou outro container não compartilha o `127.0.0.1` do Windows; execute estes passos em um PowerShell local, dentro de uma cópia do repositório clonada no Windows.

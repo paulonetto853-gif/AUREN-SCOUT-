@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from scout.browser_controller import (
+    INSPECT_CATEGORY_DOM_SCRIPT,
     INSPECT_PAGE_SCRIPT,
     BrowserController,
     V1_CDP_ENDPOINT,
@@ -18,6 +19,9 @@ class FakePage:
         self.navigated_to = None
         self.clicked = False
         self.filled = False
+        self.category_clicked = False
+        self.category_button_count = 1
+        self.category_inspections = []
 
     def is_closed(self):
         return False
@@ -26,6 +30,8 @@ class FakePage:
         return self._title
 
     def evaluate(self, expression):
+        if expression == INSPECT_CATEGORY_DOM_SCRIPT:
+            return self.category_inspections.pop(0)
         if expression == INSPECT_PAGE_SCRIPT:
             return {
                 "title": self._title,
@@ -45,6 +51,14 @@ class FakePage:
         self.asserted_expression = expression
         return self.active
 
+    def get_by_role(self, role, name):
+        if role != "button" or name.pattern != r"^\s*Escolha o ramo\s*$":
+            raise AssertionError("unexpected role locator")
+        return FakeCategoryButton(self)
+
+    def wait_for_timeout(self, timeout):
+        self.waited_for_timeout = timeout
+
     def goto(self, url, wait_until):
         self.navigated_to = (url, wait_until)
         self.url = url
@@ -52,6 +66,17 @@ class FakePage:
 
     def screenshot(self):
         return b"image"
+
+
+class FakeCategoryButton:
+    def __init__(self, page):
+        self.page = page
+
+    def count(self):
+        return self.page.category_button_count
+
+    def click(self):
+        self.page.category_clicked = True
 
 
 class FakeBrowserSession:
@@ -241,6 +266,110 @@ class BrowserControllerTests(unittest.TestCase):
         self.assertIn("element.type.toLowerCase() === 'password'", INSPECT_PAGE_SCRIPT)
         self.assertIn("url.search = ''", INSPECT_PAGE_SCRIPT)
         self.assertIn("url.hash = ''", INSPECT_PAGE_SCRIPT)
+
+    def test_inspect_category_dropdown_reports_input_attributes_and_new_options(self):
+        input_info = {
+            "tag": "input",
+            "type": "text",
+            "name": "region",
+            "id": "region-filter",
+            "placeholder": "",
+            "aria_label": "",
+            "role": "combobox",
+            "autocomplete": "address-level1",
+            "labels": ["Estado"],
+            "class": "region-control",
+            "data_attributes": {"data-testid": "region"},
+            "aria_attributes": {"aria-label": "Estado"},
+        }
+        city_input_info = {
+            "tag": "input",
+            "type": "text",
+            "name": "city",
+            "id": "city-filter",
+            "placeholder": "Digite uma cidade...",
+            "aria_label": "",
+            "role": "",
+            "autocomplete": "",
+            "labels": [],
+            "class": "city-control",
+            "data_attributes": {},
+            "aria_attributes": {},
+        }
+        button_info = {
+            "tag": "button",
+            "text": "Escolha o ramo",
+            "role": "",
+            "aria_label": "",
+            "class": "category-trigger",
+            "data_attributes": {},
+            "aria_attributes": {"aria-haspopup": "listbox", "aria-expanded": "false"},
+        }
+        page_url = "https://aivio.example/dashboard"
+        before = {
+            "title": "AIVIO Dashboard",
+            "url": page_url,
+            "inputs": [city_input_info, input_info],
+            "second_text_input_without_placeholder": input_info,
+            "category_button": button_info,
+            "elements": [{"signature": "category-trigger", **button_info}],
+        }
+        after = {
+            "title": "AIVIO Dashboard",
+            "url": page_url,
+            "inputs": [city_input_info, input_info],
+            "second_text_input_without_placeholder": input_info,
+            "category_button": {**button_info, "aria_attributes": {"aria-expanded": "true"}},
+            "elements": [
+                {"signature": "category-trigger", **button_info},
+                {
+                    "signature": "restaurant-option",
+                    "tag": "div",
+                    "text": "Restaurantes",
+                    "role": "option",
+                    "aria_label": "",
+                    "class": "category-option",
+                    "data_attributes": {"data-value": "restaurants"},
+                    "aria_attributes": {"aria-selected": "false"},
+                },
+            ],
+        }
+        self.active_page.category_inspections = [before, after]
+        self.connect()
+
+        result = self.controller.inspectCategoryDropdown()
+
+        self.assertTrue(self.active_page.category_clicked)
+        self.assertEqual(self.active_page.waited_for_timeout, 300)
+        self.assertEqual(result["inputs_before_open"], [city_input_info, input_info])
+        self.assertEqual(result["second_text_input_without_placeholder"], input_info)
+        self.assertEqual(result["category_button"], button_info)
+        self.assertEqual(result["new_elements"], [{
+            "tag": "div",
+            "text": "Restaurantes",
+            "role": "option",
+            "aria_label": "",
+            "class": "category-option",
+            "data_attributes": {"data-value": "restaurants"},
+            "aria_attributes": {"aria-selected": "false"},
+        }])
+        self.assertFalse(self.active_page.filled)
+        self.assertIsNone(self.active_page.navigated_to)
+
+    def test_inspect_category_dropdown_refuses_ambiguous_button_without_clicking(self):
+        self.active_page.category_button_count = 2
+        self.active_page.category_inspections = [{
+            "title": "AIVIO Dashboard",
+            "url": "https://aivio.example/dashboard",
+            "inputs": [],
+            "elements": [],
+        }]
+        self.connect()
+
+        with self.assertRaisesRegex(RuntimeError, "exatamente um botão"):
+            self.controller.inspectCategoryDropdown()
+
+        self.assertFalse(self.active_page.category_clicked)
 
 
 if __name__ == "__main__":

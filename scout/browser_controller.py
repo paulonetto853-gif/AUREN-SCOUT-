@@ -77,6 +77,112 @@ INSPECT_PAGE_SCRIPT = """() => {
       }))
   };
 }"""
+INSPECT_CATEGORY_DOM_SCRIPT = """() => {
+  const visible = element => {
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return rect.width > 0 && rect.height > 0 &&
+      style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const sensitiveName = /password|token|cookie|csrf|auth|secret|credential|session/i;
+  const safeText = value => (value || '').replace(
+    /Bearer\\s+[a-z0-9._~+/=-]+|\\beyJ[a-zA-Z0-9_-]{10,}\\.[a-zA-Z0-9_-]{10,}\\.[a-zA-Z0-9_-]{10,}\\b/gi,
+    '[REDACTED]'
+  ).slice(0, 180);
+  const safeAttributes = element => {
+    const data = {};
+    const aria = {};
+    for (const attribute of element.attributes) {
+      const name = attribute.name.toLowerCase();
+      if (sensitiveName.test(name)) continue;
+      const value = safeText(attribute.value);
+      if (name.startsWith('data-')) data[name] = value;
+      if (name.startsWith('aria-')) aria[name] = value;
+    }
+    return {data_attributes: data, aria_attributes: aria};
+  };
+  const inputInfo = element => {
+    if (element instanceof HTMLInputElement &&
+        ['password', 'hidden'].includes(element.type.toLowerCase())) return null;
+    const labels = Array.from(element.labels || [])
+      .map(label => safeText(label.innerText || label.textContent || '').trim())
+      .filter(Boolean);
+    return {
+      tag: element.tagName.toLowerCase(),
+      type: element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase(),
+      name: element.getAttribute('name') || '',
+      id: element.id || '',
+      placeholder: element.getAttribute('placeholder') || '',
+      aria_label: element.getAttribute('aria-label') || '',
+      role: element.getAttribute('role') || '',
+      autocomplete: element.getAttribute('autocomplete') || '',
+      labels,
+      class: element.className && typeof element.className === 'string' ? element.className : '',
+      ...safeAttributes(element)
+    };
+  };
+  const elements = Array.from(document.body.querySelectorAll('*')).filter(element => {
+    if (!visible(element)) return false;
+    if (element instanceof HTMLInputElement && ['password', 'hidden'].includes(element.type.toLowerCase())) {
+      return false;
+    }
+    const text = (element.innerText || element.textContent || '').trim();
+    const hasRelevantAttribute = Array.from(element.attributes).some(attribute => {
+      const name = attribute.name.toLowerCase();
+      return name === 'role' || name.startsWith('aria-') || name.startsWith('data-');
+    });
+    const semanticTag = /^(button|option|li|select)$/.test(element.tagName.toLowerCase());
+    const compactText = text.length > 0 && text.length <= 120 &&
+      element.querySelectorAll('*').length <= 4;
+    return hasRelevantAttribute || semanticTag || compactText;
+  }).slice(0, 800);
+  const records = elements.map((element, index) => {
+    const text = safeText(element.innerText || element.textContent || '').trim();
+    const attributes = safeAttributes(element);
+    const signature = JSON.stringify([
+      element.tagName.toLowerCase(),
+      element.getAttribute('role') || '',
+      element.id || '',
+      element.getAttribute('aria-label') || '',
+      text,
+      attributes.data_attributes
+    ]);
+    return {
+      index,
+      signature,
+      tag: element.tagName.toLowerCase(),
+      text,
+      role: element.getAttribute('role') || '',
+      aria_label: element.getAttribute('aria-label') || '',
+      class: element.className && typeof element.className === 'string' ? element.className : '',
+      ...attributes
+    };
+  });
+  const textInputs = Array.from(document.querySelectorAll('input[type="text"]'))
+    .filter(element => visible(element))
+    .map(inputInfo)
+    .filter(Boolean);
+  const categoryButton = records.find(item =>
+    item.tag === 'button' && item.text.toLocaleLowerCase() === 'escolha o ramo'
+  ) || null;
+  return {
+    title: document.title,
+    url: (() => {
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.hash = '';
+      return url.href;
+    })(),
+    inputs: Array.from(document.querySelectorAll('input,textarea,select'))
+      .filter(element => visible(element))
+      .map(inputInfo)
+      .filter(Boolean),
+    second_text_input_without_placeholder:
+      textInputs[1] && !textInputs[1].placeholder ? textInputs[1] : null,
+    category_button: categoryButton,
+    elements: records
+  };
+}"""
 
 _SENSITIVE_TEXT_PATTERNS = (
     re.compile(r"(?i)bearer\s+[a-z0-9._~+/=-]+"),
@@ -267,6 +373,74 @@ class BrowserController:
             inspection["inputs"] = safe_inputs
         inspection["connected"] = browser.is_connected()
         return inspection
+
+    def inspectCategoryDropdown(self) -> dict:
+        browser = self._require_browser()
+        page = self.getActivePage()
+        if page is None:
+            raise RuntimeError("Não há uma aba ativa disponível para inspecionar")
+        hostname = urlsplit(page.url or "").hostname or ""
+        if "aivio" not in hostname.casefold() and not re.search(r"\baivio\b", page.title(), re.I):
+            raise RuntimeError("A aba ativa não foi reconhecida como AIVIO")
+
+        before = page.evaluate(INSPECT_CATEGORY_DOM_SCRIPT)
+        if not isinstance(before, dict):
+            raise RuntimeError("A inspeção inicial do dropdown retornou um formato inválido")
+        category_button = page.get_by_role(
+            "button",
+            name=re.compile(r"^\s*Escolha o ramo\s*$", re.I),
+        )
+        button_count = category_button.count()
+        if button_count != 1:
+            raise RuntimeError(
+                f"Era esperado exatamente um botão 'Escolha o ramo'; encontrados: {button_count}"
+            )
+
+        category_button.click()
+        page.wait_for_timeout(300)
+        after = page.evaluate(INSPECT_CATEGORY_DOM_SCRIPT)
+        if not isinstance(after, dict):
+            raise RuntimeError("A inspeção do dropdown aberto retornou um formato inválido")
+
+        before_counts: dict[str, int] = {}
+        for item in before.get("elements", []):
+            if isinstance(item, dict) and isinstance(item.get("signature"), str):
+                signature = item["signature"]
+                before_counts[signature] = before_counts.get(signature, 0) + 1
+
+        new_elements = []
+        after_counts: dict[str, int] = {}
+        for item in after.get("elements", []):
+            if not isinstance(item, dict) or not isinstance(item.get("signature"), str):
+                continue
+            signature = item["signature"]
+            after_counts[signature] = after_counts.get(signature, 0) + 1
+            if after_counts[signature] > before_counts.get(signature, 0):
+                new_elements.append({key: value for key, value in item.items() if key != "signature"})
+
+        after_url = after.get("url")
+        if isinstance(after_url, str):
+            parts = urlsplit(after_url)
+            after["url"] = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        before_category_button = before.get("category_button")
+        if isinstance(before_category_button, dict):
+            before_category_button = {
+                key: value for key, value in before_category_button.items() if key != "signature"
+            }
+
+        return {
+            "connected": browser.is_connected(),
+            "title": after.get("title", ""),
+            "url": after.get("url", ""),
+            "inputs_before_open": before.get("inputs", []),
+            "second_text_input_without_placeholder": before.get(
+                "second_text_input_without_placeholder"
+            ),
+            "category_button": before_category_button,
+            "dropdown_opened": True,
+            "new_elements": new_elements[:200],
+            "element_limit_reached": len(new_elements) > 200,
+        }
 
     def screenshot(self) -> bytes | None:
         page = self._active_page()

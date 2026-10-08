@@ -23,6 +23,10 @@ def main() -> None:
     serve.add_argument("--port", type=int, default=int(os.getenv("SCOUT_PORT", "8080")))
     commands.add_parser("browser-status", help="consultar o estado do Edge conectado por CDP")
     commands.add_parser("browser-inspect", help="inspecionar a página ativa sem interagir com ela")
+    commands.add_parser(
+        "browser-inspect-category",
+        help="abrir e inspecionar o dropdown de categoria sem selecionar uma opção",
+    )
     navigate = commands.add_parser("browser-navigate", help="navegar a aba ativa para uma URL autorizada")
     navigate.add_argument("url")
     task = commands.add_parser("task", help="executar uma tarefa V2 do AUREN no AIVIO")
@@ -38,7 +42,12 @@ def main() -> None:
 
     logging.basicConfig(level=os.getenv("SCOUT_LOG_LEVEL", "INFO").upper(),
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    if args.command in {"browser-status", "browser-inspect", "browser-navigate"}:
+    if args.command in {
+        "browser-status",
+        "browser-inspect",
+        "browser-inspect-category",
+        "browser-navigate",
+    }:
         cdp_endpoint = os.getenv("SCOUT_CDP_ENDPOINT", CDP_ENDPOINT)
         if cdp_endpoint != CDP_ENDPOINT:
             parser.error(f"Os comandos browser-* da V2 aceitam somente {CDP_ENDPOINT}")
@@ -49,6 +58,8 @@ def main() -> None:
                 result = controller.getStatus()
             elif args.command == "browser-inspect":
                 result = controller.inspectPage()
+            elif args.command == "browser-inspect-category":
+                result = controller.inspectCategoryDropdown()
             else:
                 result = controller.navigate(args.url)
             print(json.dumps(result, ensure_ascii=False, indent=2))

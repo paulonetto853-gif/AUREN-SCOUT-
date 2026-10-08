@@ -113,6 +113,32 @@ class CliTests(unittest.TestCase):
         controller.return_value.disconnect.assert_called_once_with()
         controller.return_value.navigate.assert_not_called()
 
+    def test_browser_inspect_category_prints_json_and_calls_diagnostic_only(self):
+        inspection = {
+            "connected": True,
+            "title": "AIVIO Dashboard",
+            "url": "https://aivio.example/dashboard",
+            "inputs_before_open": [],
+            "second_text_input_without_placeholder": None,
+            "category_button": {"text": "Escolha o ramo"},
+            "dropdown_opened": True,
+            "new_elements": [{"tag": "div", "text": "Restaurantes", "role": "option"}],
+            "element_limit_reached": False,
+        }
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-inspect-category"]),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("builtins.print") as print_output,
+        ):
+            controller.return_value.inspectCategoryDropdown.return_value = inspection
+            main()
+
+        self.assertEqual(json.loads(print_output.call_args.args[0]), inspection)
+        controller.assert_called_once_with(cdp_endpoint=CDP_ENDPOINT)
+        controller.return_value.inspectCategoryDropdown.assert_called_once_with()
+        controller.return_value.navigate.assert_not_called()
+
     def test_task_command_executes_and_prints_standardized_result(self):
         result = TaskResult(
             task_id="12345678-1234-5678-1234-567812345678",
