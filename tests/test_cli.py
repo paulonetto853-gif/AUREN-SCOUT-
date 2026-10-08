@@ -4,6 +4,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from scout.aivio import CDP_ENDPOINT
 from scout.cli import main
 from scout.v2_models import TaskResult, TaskStatus, TaskType
@@ -137,6 +139,123 @@ class CliTests(unittest.TestCase):
         controller.assert_called_once_with(cdp_endpoint=CDP_ENDPOINT)
         controller.return_value.inspectCategoryDropdown.assert_called_once_with()
         controller.return_value.navigate.assert_not_called()
+
+    def test_browser_test_city_reports_autocomplete_without_selecting_suggestion(self):
+        visible_text = "Digite uma cidade...\nPorto\nPorto Alegre\nPorto Seguro-BA\nPorto Velho-RO"
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-test-city"]),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("scout.cli.TaskExecutor") as executor,
+            patch("builtins.print") as print_output,
+        ):
+            controller.return_value.read_visible_text.return_value = visible_text
+            main()
+
+        output = json.loads(print_output.call_args.args[0])
+        self.assertEqual(
+            output,
+            {
+                "connected": True,
+                "city_input_found": True,
+                "typed": "PORTO",
+                "suggestions": [
+                    "Porto",
+                    "Porto Alegre",
+                    "Porto Seguro-BA",
+                    "Porto Velho-RO",
+                ],
+                "porto_alegre_found": True,
+                "exact_match_count": 1,
+            },
+        )
+        instance = controller.return_value
+        controller.assert_called_once_with(cdp_endpoint=CDP_ENDPOINT)
+        instance.connect.assert_called_once_with()
+        instance.element_visible.assert_called_once_with(
+            placeholder="Digite uma cidade..."
+        )
+        instance.click_element.assert_called_once_with(
+            placeholder="Digite uma cidade..."
+        )
+        instance.fill_input.assert_called_once_with(
+            "PORTO", placeholder="Digite uma cidade..."
+        )
+        instance.wait_for_text.assert_called_once_with("Porto Alegre", timeout_ms=5_000)
+        instance.read_visible_text.assert_called_once_with()
+        instance.disconnect.assert_called_once_with()
+        instance.click_text.assert_not_called()
+        instance.click_button.assert_not_called()
+        instance.open_dropdown.assert_not_called()
+        instance.select_option.assert_not_called()
+        instance.navigate.assert_not_called()
+        executor.assert_not_called()
+
+    def test_browser_test_city_prints_connection_failure_as_json(self):
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-test-city"]),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("builtins.print") as print_output,
+            self.assertRaises(SystemExit) as context,
+        ):
+            controller.return_value.connect.side_effect = RuntimeError("CDP unavailable")
+            main()
+
+        self.assertEqual(context.exception.code, 1)
+        self.assertEqual(
+            json.loads(print_output.call_args.args[0]),
+            {
+                "connected": False,
+                "city_input_found": False,
+                "typed": "PORTO",
+                "suggestions": [],
+                "porto_alegre_found": False,
+                "exact_match_count": 0,
+            },
+        )
+        controller.return_value.disconnect.assert_called_once_with()
+        controller.return_value.element_visible.assert_not_called()
+
+    def test_browser_test_city_reports_missing_city_input(self):
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-test-city"]),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("builtins.print") as print_output,
+            self.assertRaises(SystemExit) as context,
+        ):
+            controller.return_value.element_visible.return_value = False
+            main()
+
+        self.assertEqual(context.exception.code, 1)
+        output = json.loads(print_output.call_args.args[0])
+        self.assertTrue(output["connected"])
+        self.assertFalse(output["city_input_found"])
+        self.assertEqual(output["suggestions"], [])
+        controller.return_value.click_element.assert_not_called()
+        controller.return_value.fill_input.assert_not_called()
+
+    def test_browser_test_city_returns_false_when_exact_suggestion_is_missing(self):
+        with (
+            patch.object(sys, "argv", ["AurenScout-V2.exe", "browser-test-city"]),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("builtins.print") as print_output,
+        ):
+            controller.return_value.wait_for_text.side_effect = PlaywrightTimeoutError(
+                "suggestion timeout"
+            )
+            controller.return_value.read_visible_text.return_value = (
+                "Porto\nPorto Seguro-BA\nPorto Velho-RO"
+            )
+            main()
+
+        output = json.loads(print_output.call_args.args[0])
+        self.assertEqual(output["suggestions"], ["Porto", "Porto Seguro-BA", "Porto Velho-RO"])
+        self.assertFalse(output["porto_alegre_found"])
+        self.assertEqual(output["exact_match_count"], 0)
+        controller.return_value.read_visible_text.assert_called_once_with()
 
     def test_task_command_executes_and_prints_standardized_result(self):
         result = TaskResult(

@@ -4,7 +4,7 @@ import logging
 import os
 import uuid
 
-from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 
 from scout.api import create_server
 from scout.aivio import CDP_ENDPOINT
@@ -26,6 +26,10 @@ def main() -> None:
     commands.add_parser(
         "browser-inspect-category",
         help="abrir e inspecionar o dropdown de categoria sem selecionar uma opção",
+    )
+    commands.add_parser(
+        "browser-test-city",
+        help="diagnosticar o autocomplete de cidade sem selecionar uma sugestão",
     )
     navigate = commands.add_parser("browser-navigate", help="navegar a aba ativa para uma URL autorizada")
     navigate.add_argument("url")
@@ -51,12 +55,61 @@ def main() -> None:
         "browser-status",
         "browser-inspect",
         "browser-inspect-category",
+        "browser-test-city",
         "browser-navigate",
     }:
         cdp_endpoint = os.getenv("SCOUT_CDP_ENDPOINT", CDP_ENDPOINT)
         if cdp_endpoint != CDP_ENDPOINT:
             parser.error(f"Os comandos browser-* da V2 aceitam somente {CDP_ENDPOINT}")
         controller = BrowserController(cdp_endpoint=cdp_endpoint)
+        if args.command == "browser-test-city":
+            result = {
+                "connected": False,
+                "city_input_found": False,
+                "typed": "PORTO",
+                "suggestions": [],
+                "porto_alegre_found": False,
+                "exact_match_count": 0,
+            }
+            operation_error: Exception | None = None
+            try:
+                controller.connect()
+                result["connected"] = True
+                if controller.element_visible(placeholder="Digite uma cidade..."):
+                    result["city_input_found"] = True
+                    controller.click_element(placeholder="Digite uma cidade...")
+                    controller.fill_input("PORTO", placeholder="Digite uma cidade...")
+                    try:
+                        controller.wait_for_text("Porto Alegre", timeout_ms=5_000)
+                    except PlaywrightTimeoutError:
+                        pass
+
+                    visible_text = controller.read_visible_text()
+                    suggestions = [
+                        line.strip()
+                        for line in visible_text.splitlines()
+                        if line.strip().casefold().startswith("porto")
+                    ]
+                    exact_match_count = sum(
+                        suggestion.casefold() == "porto alegre"
+                        for suggestion in suggestions
+                    )
+                    result["suggestions"] = suggestions
+                    result["porto_alegre_found"] = exact_match_count > 0
+                    result["exact_match_count"] = exact_match_count
+            except (PlaywrightError, RuntimeError, ValueError) as error:
+                operation_error = error
+            finally:
+                controller.disconnect()
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if operation_error is not None:
+                logging.getLogger("scout.cli").error(
+                    "browser-test-city falhou (%s)", type(operation_error).__name__
+                )
+                raise SystemExit(1)
+            if not result["connected"] or not result["city_input_found"]:
+                raise SystemExit(1)
+            return
         try:
             controller.connect()
             if args.command == "browser-status":

@@ -82,6 +82,9 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(payload["operational"])
         self.assertFalse(payload["browser_connected"])
         self.assertFalse(payload["aivio_available"])
+        self.assertIsNone(payload["browser_version"])
+        self.assertEqual(payload["expected_edge_profile"], "EdgeProfile-V2")
+        self.assertEqual(payload["cdp_endpoint"], "http://127.0.0.1:9223")
 
     def test_tasks_endpoint_runs_health_task_with_standard_result(self):
         task_id = str(uuid.uuid4())

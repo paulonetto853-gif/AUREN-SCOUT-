@@ -258,6 +258,7 @@ class BrowserController:
         )
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        self._browser_version: str | None = None
         self._open_dropdown: Locator | None = None
         self._open_dropdown_kind: str | None = None
         self._active_page_override: Page | None = None
@@ -271,6 +272,7 @@ class BrowserController:
             stale_playwright = self._playwright
             self._browser = None
             self._playwright = None
+            self._browser_version = None
             stale_playwright.stop()
         if not self.cdp_endpoint:
             raise RuntimeError("Configure SCOUT_CDP_ENDPOINT com o endpoint CDP do Edge")
@@ -301,9 +303,12 @@ class BrowserController:
             browser = playwright.chromium.connect_over_cdp(self.cdp_endpoint, timeout=timeout_ms)
             session = browser.new_browser_cdp_session()
             try:
-                product = session.send("Browser.getVersion")["product"]
+                version_info = session.send("Browser.getVersion")
+                product = version_info["product"]
             finally:
                 session.detach()
+            if not isinstance(product, str):
+                raise RuntimeError("O Edge não informou uma versão de produto válida")
             if "edg/" not in product.casefold() and "microsoft edge" not in product.casefold():
                 raise RuntimeError(f"O endpoint CDP não pertence ao Microsoft Edge ({product})")
         except Exception:
@@ -312,9 +317,11 @@ class BrowserController:
 
         self._playwright = playwright
         self._browser = browser
+        self._browser_version = product
 
     def disconnect(self) -> None:
         self._browser = None
+        self._browser_version = None
         self._active_page_override = None
         playwright = self._playwright
         self._playwright = None
@@ -361,6 +368,8 @@ class BrowserController:
         return {
             "connected": browser.is_connected(),
             "browser": "Microsoft Edge",
+            "browser_version": self._browser_version,
+            "cdp_endpoint": self.cdp_endpoint,
             "tabs": tabs,
             "activeTab": active_tab,
         }

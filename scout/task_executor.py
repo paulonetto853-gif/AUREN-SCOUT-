@@ -204,10 +204,13 @@ class TaskExecutor:
                 "browser_connected": False,
                 "edge_connected": False,
                 "edge_product": None,
+                "browser_version": None,
                 "active_tab": None,
                 "aivio_available": False,
                 "aivio_hostname": None,
                 "aivio_url": None,
+                "cdp_endpoint": self._browser_endpoint,
+                "expected_edge_profile": "EdgeProfile-V2",
                 "operational": False,
                 "browser_error": "O adaptador de browser não oferece health check.",
             }

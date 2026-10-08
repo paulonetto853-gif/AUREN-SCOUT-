@@ -85,7 +85,15 @@ Para inspecionar os atributos dos campos e abrir apenas o dropdown “Escolha o 
 .\dist\AurenScout-V2.exe browser-inspect-category
 ```
 
-O comando retorna os inputs visíveis e seus atributos/labels e compara os elementos DOM antes/depois de abrir o dropdown. A única interação é clicar exatamente uma vez no botão único “Escolha o ramo”; não preenche campos nem seleciona opções.
+O comando retorna os inputs visíveis e seus atributos/labels e compara os elementos DOM antes/depois de abrir o dropdown. A única interação é clicar exatamente uma vez no botão único “Escolha o ramo”; não preenche campos nem seleciona opções. Ele não valida a seleção de categoria no Edge real.
+
+Para testar o autocomplete de cidade da V2 sem selecionar uma sugestão ou iniciar uma busca:
+
+```powershell
+.\dist\AurenScout-V2.exe browser-test-city
+```
+
+O comando conecta ao CDP V2, localiza o input pelo placeholder `Digite uma cidade...`, clica, preenche `PORTO`, aguarda o texto exato `Porto Alegre` e retorna em JSON as linhas visíveis que começam com `Porto`, além de indicar se encontrou exatamente `Porto Alegre`. Não clica em sugestões, categoria ou “Buscar” e não executa nenhuma tarefa. A leitura textual é diagnóstica; ainda não valida no Edge real que as linhas lidas pertencem ao popup de autocomplete.
 
 O `BrowserController` também oferece primitivas explícitas reutilizáveis para clique simples/duplo, formulários, dropdowns, teclado/clipboard, navegação e abas, rolagem, espera por elemento/texto/URL/mudança, leitura de atributos/tabelas/listas, estado, downloads e upload de arquivo explicitamente solicitado. A resolução prioriza role/nome acessível, texto exato, labels/placeholder e atributos estáveis; alvos visíveis ambíguos falham. Classes CSS não são usadas como prioridade. Interações com pagamentos e WhatsApp são bloqueadas. Os fluxos V2 `SEARCH_LEADS`, `OPEN_COMPANY` e `GENERATE_SITE` usam essas primitivas. A ausência ou ambiguidade de um controle obrigatório falha explicitamente.
 
@@ -118,11 +126,19 @@ O comando que controla o Edge precisa rodar no mesmo Windows do navegador. Um te
 
    ```powershell
    Invoke-RestMethod http://127.0.0.1:9223/json/version | ConvertTo-Json -Depth 4
-   Remove-Item Env:SCOUT_CDP_ENDPOINT -ErrorAction SilentlyContinue
+   $env:SCOUT_CDP_ENDPOINT = "http://127.0.0.1:9223"
    .\dist\AurenScout-V2.exe browser-status
    ```
 
-   O `browser-status` do V2 usa `http://127.0.0.1:9223` quando `SCOUT_CDP_ENDPOINT` não está definido e rejeita o endpoint V1. O resultado deve conter `"connected": true`, `"browser": "Microsoft Edge"`, `tabs` (título e URL de cada aba) e `activeTab`.
+   Para validar os comandos sem executar uma tarefa AIVIO:
+
+   ```powershell
+   .\dist\AurenScout-V2.exe browser-status
+   .\dist\AurenScout-V2.exe browser-inspect
+   .\dist\AurenScout-V2.exe browser-test-city
+   ```
+
+   `browser-test-city` clica no input de cidade e preenche `PORTO`, mas não seleciona sugestão nem clica em “Buscar”. O `browser-status` do V2 usa `http://127.0.0.1:9223` por padrão e rejeita o endpoint V1. O status informa conexão, versão reportada por CDP, abas e endpoint; o health da integração também informa o perfil V2 esperado (`EdgeProfile-V2`), sem afirmar que CDP comprovou o diretório de perfil efetivamente usado.
 
    Para executar `browser-status` V1 com a aplicação V1 já instalada, mantenha o endpoint em `http://127.0.0.1:9222`; não use o executável V2 para se conectar ao Edge V1. Se o projeto estiver em Codespaces, faça um clone local no Windows e execute os comandos a partir dele — não execute o cliente CDP no terminal remoto.
 
@@ -132,7 +148,7 @@ O script não cria túneis, não altera firewall e não autentica no AIVIO. O en
 
 O V2 recebe tarefas explícitas do AUREN, usa a aba ativa do Edge via CDP local e devolve JSON padronizado. O login no AIVIO continua manual. O V2 não decide quando gerar site nem executa ações comerciais.
 
-Antes de executar tarefas, inicie o Edge CDP como descrito acima, abra o AIVIO na aba ativa e faça login manualmente. O campo de localização observado é identificado por `placeholder="Digite uma cidade..."`; o Scout clica nele, preenche a cidade, aguarda o texto exato da sugestão e clica nessa sugestão antes de seguir. Não usa o input de ID dinâmico como campo de Estado nem seleciona por posição. A busca estruturada ainda recebe `state` no contrato e o preserva como dado do lead, mas não tenta preencher um controle de Estado não confirmado. A categoria observada é o combobox “Escolha o ramo”; o botão observado “Buscar” tem compatibilidade com o rótulo legado “Ver agora”. Os nomes e URLs de leads são observações do AIVIO; campos não disponíveis permanecem `null`. A paginação usa controles visíveis com rótulos acessíveis reconhecíveis e interrompe páginas repetidas. A geração usa apenas ações visíveis identificadas por rótulos observáveis.
+Antes de executar tarefas, inicie o Edge CDP como descrito acima, abra o AIVIO na aba ativa e faça login manualmente. O campo de localização observado é identificado por `placeholder="Digite uma cidade..."`; o Scout clica nele, preenche a cidade, aguarda a sugestão textual exata e clica nessa sugestão antes de seguir. Não usa o input de ID dinâmico como campo de Estado nem seleciona por posição. A busca estruturada ainda recebe `state` no contrato e o preserva como dado do lead, mas não tenta preencher um controle de Estado não confirmado nem deriva uma UF da cidade sem evidência retornada pelo AIVIO. A categoria observada é o combobox “Escolha o ramo”; a seleção usa a primitiva genérica e falha em ausência/ambiguidade. O botão observado “Buscar” tem compatibilidade com o rótulo legado “Ver agora”. Os nomes e URLs de leads são observações do AIVIO; campos não disponíveis permanecem `null`. A paginação usa controles visíveis com rótulos acessíveis reconhecíveis e interrompe páginas repetidas. A geração usa apenas ações visíveis identificadas por rótulos observáveis e agora requer uma mensagem textual de sucesso observável; apenas um link novo não confirma geração.
 
 ### API de tarefas
 
@@ -169,7 +185,7 @@ python -m scout task OPEN_COMPANY --payload '{"lead":{"company_name":"Restaurant
 python -m scout task GENERATE_SITE --authorization '{"allow_credit_consumption":true,"allow_external_effects":true}' --payload '{"lead":{"company_name":"Restaurante Exemplo","city":"Porto Alegre","state":"RS","company_url":"https://app.aivio.example/company/123"}}'
 ```
 
-O comando `HEALTH_CHECK` pode ser executado via `/tasks`; `GET /health` informa separadamente `api_operational`, `browser_connected`/`edge_connected`, `active_tab`, `aivio_available`, `aivio_hostname`, `aivio_url` e `operational`. A API pode estar operante mesmo quando Edge/AIVIO não está; nesse caso, `operational` será `false`. O fechamento do Edge/AIVIO é reportado como indisponibilidade e não derruba a API.
+O comando `HEALTH_CHECK` pode ser executado via `/tasks`; `GET /health` informa separadamente `api_operational`, `browser_connected`/`edge_connected`, navegador, versão retornada por CDP, `active_tab`, `aivio_available`, `aivio_hostname`, `aivio_url`, endpoint CDP, perfil V2 esperado e `operational`. `expected_edge_profile` é a configuração esperada (`EdgeProfile-V2`), não uma prova do diretório de perfil efetivamente aberto pelo Edge. A API pode estar operante mesmo quando Edge/AIVIO não está; nesse caso, `operational` será `false`. O fechamento do Edge/AIVIO é reportado como indisponibilidade e não derruba a API.
 
 Para executar uma tarefa via HTTP, envie o objeto JSON acima a `http://127.0.0.1:8080/tasks`. Falhas retornam `status: "failed"` com `error.code`/`error.message` e HTTP 500; timeouts retornam `status: "timeout"` e HTTP 504. Uma busca que não alcance a quantidade pedida retorna `partial`.
 
@@ -177,7 +193,7 @@ Consulte uma tarefa, inclusive enquanto aguarda execução, com `GET http://127.
 
 `SCOUT_AIVIO_GENERATION_TIMEOUT_MS` controla o timeout de espera por um sinal de conclusão (padrão 120000 ms; intervalo permitido de 1000 a 600000). A geração retorna artefatos observados como website ou URL PDF; um caminho local só será informado quando realmente disponível.
 
-Como o AIVIO não fornece neste repositório um contrato estável de DOM/URL, a interação usa rótulos acessíveis e estrutura HTML semântica visível. A extração de resultados usa roles `article`/`listitem`; se não estiverem presentes, não há evidência de resultado estruturado. A geração não foi validada contra uma sessão AIVIO real neste ambiente. Não foram executadas buscas reais nem geração de sites; esses fluxos foram testados com mocks. Se o controle acessível, os roles ou o sinal de sucesso não forem reconhecidos, a tarefa falha explicitamente ou retorna aviso, em vez de inventar um resultado.
+Como o AIVIO não fornece neste repositório um contrato estável de DOM/URL, a interação usa rótulos acessíveis e estrutura HTML semântica visível. A extração de resultados usa roles `article`/`listitem`; se não estiverem presentes, não há evidência de resultado estruturado. A geração não foi validada contra uma sessão AIVIO real neste ambiente. Não foram executadas buscas reais nem geração de sites; esses fluxos foram testados com mocks. Se o controle acessível, os roles ou o sinal de sucesso não forem reconhecidos, a tarefa falha explicitamente ou retorna aviso, em vez de inventar um resultado. **Seleção da cidade/UF, categoria, paginação e extração ainda precisam de validação com AIVIO real no Windows**; o comando `browser-test-city` não seleciona a cidade nem aciona busca.
 
 ## Configuração
 
@@ -281,11 +297,13 @@ $env:SCOUT_AIVIO_LIVE_ALLOW_CREDIT_CONSUMPTION = "1"
 python -m unittest discover -s tests -p "test_aivio_live.py" -v
 ```
 
-O teste de integração real executa o mesmo fluxo e fica ignorado quando `SCOUT_CDP_ENDPOINT` não está configurado:
+O teste de integração real do BrowserController fica ignorado quando `SCOUT_CDP_ENDPOINT` não está configurado:
 
 ```sh
 SCOUT_CDP_ENDPOINT=http://127.0.0.1:9223 python3 -m unittest discover -s tests -p 'test_browser_controller_live.py' -v
 ```
+
+Esse teste de conexão não executa `SEARCH_LEADS`. O teste real de AIVIO em `test_aivio_live.py`, ao contrário, exige os opt-ins descritos acima e pode consumir créditos.
 
 ## Limitações
 

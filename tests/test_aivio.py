@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from scout.aivio import AivioIntegration
 from scout.v2_models import V2Lead
@@ -52,6 +53,15 @@ class FakeBrowserController:
 
     def active_tab(self):
         return {"title": self.page.title(), "url": self.page.url}
+
+    def getStatus(self):
+        return {
+            "connected": True,
+            "browser": "Microsoft Edge",
+            "browser_version": "Edg/130.0.0.0",
+            "cdp_endpoint": self.cdp_endpoint,
+            "activeTab": self.active_tab(),
+        }
 
     def read_buttons(self):
         return list(self.buttons)
@@ -262,6 +272,16 @@ class AivioIntegrationTests(unittest.TestCase):
                 "Porto Alegre", "RS", "restaurantes", allow_credit_consumption=True,
             )
 
+    def test_health_reports_edge_version_endpoint_and_expected_v2_profile(self):
+        health = self.integration.browser_health()
+
+        self.assertTrue(health["browser_connected"])
+        self.assertEqual(health["edge_product"], "Microsoft Edge")
+        self.assertEqual(health["browser_version"], "Edg/130.0.0.0")
+        self.assertEqual(health["cdp_endpoint"], "http://127.0.0.1:9223")
+        self.assertEqual(health["expected_edge_profile"], "EdgeProfile-V2")
+        self.assertTrue(health["aivio_available"])
+
     def test_open_company_uses_controller_navigation_and_same_origin(self):
         lead = V2Lead(
             company_name="Restaurante Exemplo",
@@ -311,6 +331,31 @@ class AivioIntegrationTests(unittest.TestCase):
         self.assertTrue(updated.company_name)
         self.assertEqual(artifacts[0]["url"], "https://restaurante.aivio.site/")
         self.assertEqual(warnings, [])
+
+    def test_new_link_without_generation_confirmation_is_not_success(self):
+        lead = V2Lead(
+            company_name="Restaurante Exemplo",
+            company_url="https://app.aivio.example/company/123",
+        )
+        self.controller.buttons.append({"text": "Gerar site", "disabled": False})
+
+        def add_unconfirmed_link(*, text):
+            self.controller.links.append({
+                "text": text,
+                "href": "https://restaurante.aivio.site/",
+            })
+
+        with patch.object(
+            self.controller,
+            "click_button",
+            side_effect=add_unconfirmed_link,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "não foi confirmada"):
+                self.integration.generate_site(
+                    lead,
+                    allow_credit_consumption=True,
+                    allow_external_effects=True,
+                )
 
 
 if __name__ == "__main__":

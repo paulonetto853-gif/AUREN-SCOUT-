@@ -55,10 +55,13 @@ def create_server(
                         "browser_connected": False,
                         "edge_connected": False,
                         "edge_product": None,
+                        "browser_version": None,
                         "active_tab": None,
                         "aivio_available": False,
                         "aivio_hostname": None,
                         "aivio_url": None,
+                        "cdp_endpoint": None,
+                        "expected_edge_profile": "EdgeProfile-V2",
                         "browser_error": _safe_error_message(error),
                     })
                 self._json(200, health)

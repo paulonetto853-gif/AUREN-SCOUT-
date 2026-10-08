@@ -218,8 +218,8 @@ class AivioIntegration:
             after_text,
             re.I,
         ))
-        if not success and not artifacts:
-            raise RuntimeError("A ação terminou sem sinal verificável de geração ou artefato novo")
+        if not success:
+            raise RuntimeError("A geração não foi confirmada por uma mensagem observável do AIVIO")
         warnings: list[str] = []
         if not artifacts:
             warnings.append("O AIVIO indicou conclusão, mas nenhum artefato novo foi identificado.")
@@ -235,10 +235,13 @@ class AivioIntegration:
                 "browser_connected": False,
                 "edge_connected": False,
                 "edge_product": None,
+                "browser_version": None,
                 "active_tab": None,
                 "aivio_available": False,
                 "aivio_hostname": None,
                 "aivio_url": None,
+                "cdp_endpoint": self.browser_controller.cdp_endpoint,
+                "expected_edge_profile": "EdgeProfile-V2",
                 "operational": False,
                 "browser_error": str(error),
             }
@@ -256,10 +259,13 @@ class AivioIntegration:
             "browser_connected": browser_connected,
             "edge_connected": browser_connected,
             "edge_product": browser_status.get("browser"),
+            "browser_version": browser_status.get("browser_version"),
             "active_tab": active_tab,
             "aivio_available": aivio_available,
             "aivio_hostname": hostname,
             "aivio_url": active_url,
+            "cdp_endpoint": browser_status.get("cdp_endpoint", self.browser_controller.cdp_endpoint),
+            "expected_edge_profile": "EdgeProfile-V2",
             "operational": browser_connected and page is not None and aivio_available,
             "aivio_error": None if aivio_available else "A aba ativa não está em um hostname AIVIO.",
         }

@@ -147,6 +147,8 @@ class BrowserControllerTests(unittest.TestCase):
 
         self.assertTrue(decoded["connected"])
         self.assertEqual(decoded["browser"], "Microsoft Edge")
+        self.assertEqual(decoded["browser_version"], "Edg/130.0.0.0")
+        self.assertEqual(decoded["cdp_endpoint"], "http://127.0.0.1:9222")
         self.assertEqual(decoded["tabs"], [
             {"title": "AIVIO", "url": "https://aivio.example/"},
             {"title": "AIVIO - Painel", "url": "https://aivio.example/home"},
@@ -160,6 +162,7 @@ class BrowserControllerTests(unittest.TestCase):
         self.controller.disconnect()
         self.assertTrue(self.playwright.stopped)
         self.assertTrue(self.browser.connected)
+        self.assertIsNone(self.controller._browser_version)
 
     def test_tab_status_removes_query_and_fragment_secrets(self):
         self.active_page.url = "https://aivio.example/home?access_token=hidden#private"
