@@ -283,7 +283,7 @@ class AivioIntegration:
 
     def _fill_search_fields(self, fields: dict[str, str]) -> None:
         buttons = self.browser_controller.read_buttons()
-        self._require_unique_button(buttons, "Escolha o ramo")
+        self._require_unique_category_combobox(buttons)
         search_label = self._search_button_label(buttons)
         if search_label is None:
             raise RuntimeError('Botão "Buscar" (ou legado "Ver agora") não encontrado no AIVIO')
@@ -303,30 +303,17 @@ class AivioIntegration:
             "option_clicked": False,
             "category_confirmed": False,
         }
-        self.browser_controller.open_dropdown("Escolha o ramo")
+        self.browser_controller.open_dropdown(
+            role="combobox",
+            data_attributes={"data-slot": "select-trigger"},
+        )
         steps["combobox_found"] = True
         steps["click_performed"] = True
-        self.browser_controller.wait_for_element(
-            role="option",
-            accessible_name=category,
-            timeout_ms=5_000,
-        )
+        self.browser_controller.wait_for_dropdown_open(timeout_ms=5_000)
         steps["dropdown_open"] = True
+        self.browser_controller.select_option(category, timeout_ms=5_000)
         steps["option_found"] = True
-        self.browser_controller.click_text(category)
         steps["option_clicked"] = True
-        dropdown_state = self.browser_controller.read_dropdown_state()
-        selected_values = (
-            dropdown_state.get("text"),
-            dropdown_state.get("value"),
-            dropdown_state.get("valueText"),
-        )
-        if not any(
-            isinstance(value, str)
-            and " ".join(value.split()).casefold() == " ".join(category.split()).casefold()
-            for value in selected_values
-        ):
-            raise RuntimeError(f"A categoria não foi confirmada no AIVIO: {category}")
         steps["category_confirmed"] = True
         return steps
 
@@ -354,6 +341,26 @@ class AivioIntegration:
             raise RuntimeError(f'Botão "{label}" não encontrado no AIVIO')
         if len(matches) != 1:
             raise RuntimeError(f'Botão "{label}" ambíguo: encontrados {len(matches)}')
+        return matches[0]
+
+    @staticmethod
+    def _require_unique_category_combobox(buttons: list[dict[str, Any]]) -> dict[str, Any]:
+        matches = [
+            item for item in buttons
+            if isinstance(item, dict)
+            and not item.get("disabled")
+            and (
+                str(item.get("role") or "").casefold() == "combobox"
+                or (
+                    isinstance(item.get("data_attributes"), dict)
+                    and item["data_attributes"].get("data-slot") == "select-trigger"
+                )
+            )
+        ]
+        if not matches:
+            raise RuntimeError("Combobox de categoria não encontrado no AIVIO")
+        if len(matches) != 1:
+            raise RuntimeError(f"Combobox de categoria ambíguo: encontrados {len(matches)}")
         return matches[0]
 
     @staticmethod

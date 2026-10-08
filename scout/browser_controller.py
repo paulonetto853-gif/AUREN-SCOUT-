@@ -992,8 +992,9 @@ class BrowserController:
 
     def open_dropdown(
         self,
-        trigger: str,
+        trigger: str | None = None,
         *,
+        role: str | None = None,
         aria_label: str | None = None,
         label: str | None = None,
         placeholder: str | None = None,
@@ -1007,11 +1008,28 @@ class BrowserController:
         page = self.getActivePage()
         if page is None:
             raise RuntimeError("Não há uma aba ativa disponível")
-        strategies: list[tuple[str, Locator]] = [
-            ("role combobox+nome", page.get_by_role("combobox", name=trigger, exact=True)),
-            ("role button+nome", page.get_by_role("button", name=trigger, exact=True)),
-            ("texto exato", page.get_by_text(trigger, exact=True)),
-        ]
+        strategies: list[tuple[str, Locator]] = []
+        if data_attributes:
+            strategies.append((
+                "atributos data-*",
+                page.locator(self._stable_data_selector(
+                    ("button", '[role="button"]', "select", "[role='combobox']"),
+                    data_attributes,
+                )),
+            ))
+        if role:
+            strategies.append((
+                "role",
+                page.get_by_role(role, name=trigger, exact=True)
+                if trigger
+                else page.get_by_role(role),
+            ))
+        if trigger:
+            strategies.extend((
+                ("role combobox+nome", page.get_by_role("combobox", name=trigger, exact=True)),
+                ("role button+nome", page.get_by_role("button", name=trigger, exact=True)),
+                ("texto exato", page.get_by_text(trigger, exact=True)),
+            ))
         if aria_label:
             strategies.append((
                 "aria-label",
@@ -1028,14 +1046,8 @@ class BrowserController:
             strategies.append(("name", page.locator(self._css_attribute_selector("name", name))))
         if element_id:
             strategies.append(("id", page.locator(self._css_attribute_selector("id", element_id))))
-        if data_attributes:
-            strategies.append((
-                "atributos data-*",
-                page.locator(self._stable_data_selector(
-                    ("button", '[role="button"]', "select", "[role='combobox']"),
-                    data_attributes,
-                )),
-            ))
+        if not strategies:
+            raise ValueError("Forneça um role, nome ou atributo estável para identificar o dropdown")
         target = self._resolve_target("dropdown trigger", strategies)
         self._guard_target_action(target)
         tag_name = str(target.evaluate("(element) => element.tagName.toLowerCase()"))
@@ -1047,6 +1059,173 @@ class BrowserController:
         self._open_dropdown = target
         self._open_dropdown_kind = "custom"
         return {"opened": True, "kind": "custom"}
+
+    def _read_dropdown_menu(self, *, should_scroll: bool = False) -> dict[str, Any]:
+        if self._open_dropdown is None or self._open_dropdown_kind != "custom":
+            raise RuntimeError("Abra explicitamente um dropdown customizado antes de inspecioná-lo")
+        return self._open_dropdown.evaluate(
+            """(trigger, shouldScroll) => {
+              const visible = element => {
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 &&
+                  style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const controlled = (trigger.getAttribute('aria-controls') || '')
+                .split(/\\s+/)
+                .filter(Boolean)
+                .map(id => document.getElementById(id))
+                .filter(element => element && visible(element));
+              const listboxes = Array.from(document.querySelectorAll('[role="listbox"]'))
+                .filter(element => visible(element));
+              const contents = Array.from(document.querySelectorAll(
+                '[data-slot="select-content"]'
+              )).filter(element => visible(element));
+              const menus = controlled.length
+                ? controlled
+                : listboxes.length ? listboxes : contents;
+              const candidates = menus.filter(menu =>
+                menu.matches('[role="listbox"],[data-slot="select-content"]') ||
+                menu.querySelector('[role="option"],[data-slot="select-item"]')
+              );
+              if (candidates.length > 1) {
+                return {opened: true, ambiguous: true, options: []};
+              }
+              const menu = candidates[0];
+              if (!menu) return {opened: false, options: []};
+              const isVisibleOption = element => {
+                if (!visible(element)) return false;
+                const rect = element.getBoundingClientRect();
+                if (rect.bottom <= 0 || rect.top >= window.innerHeight ||
+                    rect.right <= 0 || rect.left >= window.innerWidth) return false;
+                for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+                  const style = window.getComputedStyle(parent);
+                  if (/auto|scroll|overlay|hidden|clip/.test(
+                    `${style.overflowY} ${style.overflowX}`
+                  )) {
+                    const bounds = parent.getBoundingClientRect();
+                    if (rect.bottom <= bounds.top || rect.top >= bounds.bottom ||
+                        rect.right <= bounds.left || rect.left >= bounds.right) return false;
+                  }
+                  if (parent === menu) break;
+                }
+                return true;
+              };
+              const optionElements = Array.from(menu.querySelectorAll(
+                '[role="option"],[data-slot="select-item"]'
+              )).filter(isVisibleOption);
+              const options = optionElements.map(option =>
+                (option.innerText || option.textContent || '').trim()
+              ).filter(Boolean);
+              const scrollable = element => {
+                const style = window.getComputedStyle(element);
+                return element.scrollHeight > element.clientHeight + 1 &&
+                  /auto|scroll|overlay|hidden/.test(style.overflowY);
+              };
+              const descendants = Array.from(menu.querySelectorAll('*')).reverse();
+              const nestedScroller = descendants.find(scrollable);
+              let scroller = nestedScroller || (scrollable(menu) ? menu : null);
+              if (!scroller) {
+                for (let parent = menu.parentElement;
+                  parent && parent !== document.body && parent !== document.documentElement;
+                  parent = parent.parentElement
+                ) {
+                  if (scrollable(parent)) {
+                    scroller = parent;
+                    break;
+                  }
+                }
+              }
+              if (shouldScroll) {
+                if (!scroller) {
+                  return {opened: true, ambiguous: false, scrollable: false};
+                }
+                const before = scroller.scrollTop;
+                const maxScroll = scroller.scrollHeight - scroller.clientHeight;
+                const after = Math.min(
+                  maxScroll,
+                  before + Math.max(1, scroller.clientHeight * 0.8)
+                );
+                scroller.scrollTop = after;
+                return {
+                  opened: true,
+                  ambiguous: false,
+                  scrollable: true,
+                  scrolled: scroller.scrollTop > before,
+                  at_end: scroller.scrollTop >= maxScroll - 1,
+                  scroll_top: scroller.scrollTop,
+                  scroll_height: scroller.scrollHeight
+                };
+              }
+              return {
+                opened: true,
+                ambiguous: false,
+                options,
+                scrollable: Boolean(scroller),
+                scrollTop: scroller ? scroller.scrollTop : null,
+                scrollHeight: scroller ? scroller.scrollHeight : null,
+                clientHeight: scroller ? scroller.clientHeight : null
+              };
+            }""",
+            should_scroll,
+        )
+
+    def wait_for_dropdown_open(self, *, timeout_ms: int = 5_000) -> bool:
+        self._validate_timeout(timeout_ms)
+        if self._open_dropdown is None:
+            raise RuntimeError("Abra explicitamente um dropdown antes de aguardar sua abertura")
+        if self._open_dropdown_kind == "native":
+            return True
+        page = self.getActivePage()
+        if page is None:
+            raise RuntimeError("Não há uma aba ativa disponível")
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            state = self._read_dropdown_menu()
+            if state.get("ambiguous"):
+                raise ValueError("Mais de um menu de opções está visível")
+            if state.get("opened"):
+                return True
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                raise TimeoutError("O dropdown não abriu dentro do prazo")
+            page.wait_for_timeout(min(50, remaining_ms))
+
+    def read_dropdown_options(self) -> list[str]:
+        state = self._read_dropdown_menu()
+        if state.get("ambiguous"):
+            raise ValueError("Mais de um menu de opções está visível")
+        if not state.get("opened"):
+            raise RuntimeError("O dropdown está fechado")
+        options = state.get("options")
+        if not isinstance(options, list) or not all(isinstance(option, str) for option in options):
+            raise RuntimeError("As opções do dropdown retornaram um formato inválido")
+        return options
+
+    def scroll_dropdown(self) -> dict[str, int | bool]:
+        state = self._read_dropdown_menu(should_scroll=True)
+        if state.get("ambiguous"):
+            raise ValueError("Mais de um menu de opções está visível")
+        if not state.get("opened"):
+            raise RuntimeError("O dropdown está fechado")
+        if not state.get("scrollable"):
+            raise RuntimeError("O dropdown não possui um container rolável")
+        if not all(
+            isinstance(state.get(key), expected_type)
+            for key, expected_type in (
+                ("scrolled", bool),
+                ("at_end", bool),
+                ("scroll_top", (int, float)),
+                ("scroll_height", (int, float)),
+            )
+        ):
+            raise RuntimeError("A rolagem do dropdown retornou um formato inválido")
+        return {
+            "scrolled": state["scrolled"],
+            "at_end": state["at_end"],
+            "scroll_top": int(state["scroll_top"]),
+            "scroll_height": int(state["scroll_height"]),
+        }
 
     def select_option(self, text: str, *, timeout_ms: int = 5_000) -> dict[str, bool]:
         self._validate_timeout(timeout_ms)
@@ -1085,7 +1264,6 @@ class BrowserController:
         page = self.getActivePage()
         if page is None:
             raise RuntimeError("Não há uma aba ativa disponível")
-        before_page = self._snapshot_page(page)
         before_trigger = dropdown.evaluate(
             """element => ({
               text: (element.innerText || element.textContent || '').trim(),
@@ -1098,6 +1276,26 @@ class BrowserController:
             ("role option+nome", page.get_by_role("option", name=text, exact=True)),
             ("texto exato", page.get_by_text(text, exact=True)),
         ]
+        expected = " ".join(text.split()).casefold()
+        max_scrolls = 40
+        for scroll_count in range(max_scrolls + 1):
+            options = self.read_dropdown_options()
+            matches = [
+                option for option in options
+                if " ".join(option.split()).casefold() == expected
+            ]
+            if len(matches) > 1:
+                raise ValueError(f"Opção ambígua no dropdown: {text}")
+            if matches:
+                break
+            if scroll_count == max_scrolls:
+                raise RuntimeError(f"Opção não encontrada após {max_scrolls} rolagens: {text}")
+            scroll_result = self.scroll_dropdown()
+            if scroll_result["at_end"] and not scroll_result["scrolled"]:
+                raise RuntimeError(f"Opção não encontrada até o fim do dropdown: {text}")
+            if not scroll_result["scrolled"]:
+                raise RuntimeError("O dropdown não avançou durante a rolagem")
+            page.wait_for_timeout(min(100, timeout_ms))
         option = self._resolve_target(f"opção {text!r}", option_strategies)
         option.click(timeout=timeout_ms)
         after_trigger = dropdown.evaluate(
@@ -1108,7 +1306,6 @@ class BrowserController:
               valueText: element.getAttribute('aria-valuetext')
             })"""
         )
-        expected = " ".join(text.split()).casefold()
         selected_values = (
             after_trigger.get("text"),
             after_trigger.get("value"),

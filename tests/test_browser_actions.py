@@ -110,6 +110,18 @@ class FakeActionLocator:
         self.attributes["uploaded_file"] = path
 
     def evaluate(self, script, *args):
+        if "const controlled = (trigger.getAttribute('aria-controls')" in script:
+            if args and args[0]:
+                if not self.page.dropdown_menu_state.get("scrollable"):
+                    return self.page.dropdown_menu_state
+                result = self.page.dropdown_scroll_results.pop(0)
+                self.page.dropdown_menu_state.update(result.get("state", {}))
+                if result.get("options") is not None:
+                    self.page.dropdown_menu_state["options"] = result["options"]
+                if result.get("make_option_visible") and self.page.dropdown_option_locator:
+                    self.page.dropdown_option_locator.visible = True
+                return {**self.page.dropdown_menu_state, **result["result"]}
+            return self.page.dropdown_menu_state
         if "tagName.toLowerCase()" in script:
             return "select" if self.kind == "native" else self.tag
         if "Array.from(element.labels" in script:
@@ -174,6 +186,17 @@ class FakeActionPage:
         self.placeholders = {}
         self.attributes = {}
         self.dropdown_closed = False
+        self.dropdown_menu_state = {
+            "opened": False,
+            "ambiguous": False,
+            "options": [],
+            "scrollable": False,
+            "scrollTop": None,
+            "scrollHeight": None,
+            "clientHeight": None,
+        }
+        self.dropdown_scroll_results = []
+        self.dropdown_option_locator = None
         self._title = "AIVIO"
         self._closed = False
         self.focused_locator = None
@@ -222,7 +245,18 @@ class FakeActionPage:
         if arg["url"] == self.url and arg["text_hash"] == current_hash:
             raise PlaywrightTimeoutError("page did not change")
 
-    def get_by_role(self, role, *, name, exact):
+    def wait_for_timeout(self, timeout):
+        self.waited_for = timeout
+
+    def get_by_role(self, role, *, name=None, exact=False):
+        if name is None:
+            matches = [
+                locator for (item_role, _), locator in self.roles.items()
+                if item_role == role
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            return FakeActionLocator(self, visible=False)
         return self.roles.get((role, name), FakeActionLocator(self, visible=False))
 
     def get_by_text(self, text, *, exact):
@@ -412,6 +446,10 @@ class BrowserActionTests(unittest.TestCase):
             on_click=lambda: (
                 setattr(self.page, "dropdown_closed", False),
                 trigger.attributes.update({"aria-expanded": "true"}),
+                self.page.dropdown_menu_state.update({
+                    "opened": True,
+                    "options": ["Restaurantes"],
+                }),
             ),
         )
         option = FakeActionLocator(
@@ -432,7 +470,37 @@ class BrowserActionTests(unittest.TestCase):
         self.assertEqual(opened, {"opened": True, "kind": "custom"})
         self.assertEqual(selected, {"selected": True, "value_changed": True})
 
-    def test_open_aivio_category_combobox_by_observed_accessible_name(self):
+    def test_open_aivio_category_combobox_by_stable_data_slot(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Restaurantes, padarias e lanchonetes",
+            attributes={"role": "combobox", "data-slot": "select-trigger"},
+            on_click=lambda: (
+                setattr(self.page, "dropdown_closed", False),
+                self.page.dropdown_menu_state.update({
+                    "opened": True,
+                    "options": ["Barbearias"],
+                }),
+            ),
+        )
+        selector = (
+            'button[data-slot="select-trigger"],'
+            '[role="button"][data-slot="select-trigger"],'
+            'select[data-slot="select-trigger"],'
+            '[role=\'combobox\'][data-slot="select-trigger"]'
+        )
+        self.page.attributes[selector] = trigger
+
+        result = self.controller.open_dropdown(
+            role="combobox",
+            data_attributes={"data-slot": "select-trigger"},
+        )
+
+        self.assertEqual(result, {"opened": True, "kind": "custom"})
+        self.assertEqual(trigger.click_count, 1)
+
+    def test_select_dropdown_option_that_is_already_visible(self):
         trigger = FakeActionLocator(
             self.page,
             kind="custom",
@@ -440,12 +508,142 @@ class BrowserActionTests(unittest.TestCase):
             attributes={"role": "combobox", "data-slot": "select-trigger"},
             on_click=lambda: setattr(self.page, "dropdown_closed", False),
         )
-        self.page.roles[("combobox", "Escolha o ramo")] = trigger
+        option = FakeActionLocator(
+            self.page,
+            text="Barbearias",
+            on_click=lambda: (
+                setattr(trigger, "text", "Barbearias"),
+                setattr(self.page, "dropdown_closed", True),
+            ),
+        )
+        self.page.attributes['button[data-slot="select-trigger"],[role="button"][data-slot="select-trigger"],select[data-slot="select-trigger"],[role=\'combobox\'][data-slot="select-trigger"]'] = trigger
+        self.page.roles[("option", "Barbearias")] = option
+        self.page.dropdown_menu_state.update({
+            "opened": True,
+            "options": ["Barbearias"],
+        })
 
-        result = self.controller.open_dropdown("Escolha o ramo")
+        self.controller.open_dropdown(
+            role="combobox",
+            data_attributes={"data-slot": "select-trigger"},
+        )
+        self.assertTrue(self.controller.wait_for_dropdown_open())
+        self.assertEqual(self.controller.read_dropdown_options(), ["Barbearias"])
+        result = self.controller.select_option("Barbearias")
 
-        self.assertEqual(result, {"opened": True, "kind": "custom"})
-        self.assertEqual(trigger.click_count, 1)
+        self.assertEqual(result, {"selected": True, "value_changed": True})
+        self.assertEqual(trigger.text, "Barbearias")
+
+    def test_select_dropdown_option_after_scrolling_its_container(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Escolha o ramo",
+            attributes={"role": "combobox", "data-slot": "select-trigger"},
+            on_click=lambda: setattr(self.page, "dropdown_closed", False),
+        )
+        option = FakeActionLocator(
+            self.page,
+            visible=False,
+            text="Clínicas e consultórios",
+            on_click=lambda: (
+                setattr(trigger, "text", "Clínicas e consultórios"),
+                setattr(self.page, "dropdown_closed", True),
+            ),
+        )
+        self.page.attributes['button[data-slot="select-trigger"],[role="button"][data-slot="select-trigger"],select[data-slot="select-trigger"],[role=\'combobox\'][data-slot="select-trigger"]'] = trigger
+        self.page.roles[("option", "Clínicas e consultórios")] = option
+        self.page.dropdown_menu_state.update({
+            "opened": True,
+            "options": ["Restaurantes", "Barbearias"],
+            "scrollable": True,
+            "scrollTop": 0,
+            "scrollHeight": 600,
+            "clientHeight": 200,
+        })
+        self.page.dropdown_scroll_results.append({
+            "result": {
+                "scrolled": True,
+                "at_end": True,
+                "scroll_top": 400,
+                "scroll_height": 600,
+            },
+            "options": ["Barbearias", "Clínicas e consultórios"],
+            "make_option_visible": True,
+            "state": {"scrollTop": 400},
+        })
+        self.page.dropdown_option_locator = option
+
+        self.controller.open_dropdown(
+            role="combobox",
+            data_attributes={"data-slot": "select-trigger"},
+        )
+        result = self.controller.select_option("Clínicas e consultórios")
+
+        self.assertEqual(result, {"selected": True, "value_changed": True})
+        self.assertEqual(option.click_count, 1)
+        self.assertEqual(trigger.text, "Clínicas e consultórios")
+
+    def test_missing_dropdown_option_stops_at_end_without_page_scroll(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Escolha o ramo",
+            attributes={"role": "combobox", "data-slot": "select-trigger"},
+            on_click=lambda: setattr(self.page, "dropdown_closed", False),
+        )
+        self.page.attributes['button[data-slot="select-trigger"],[role="button"][data-slot="select-trigger"],select[data-slot="select-trigger"],[role=\'combobox\'][data-slot="select-trigger"]'] = trigger
+        self.page.dropdown_menu_state.update({
+            "opened": True,
+            "options": ["Restaurantes", "Barbearias"],
+            "scrollable": True,
+            "scrollTop": 100,
+            "scrollHeight": 300,
+            "clientHeight": 200,
+        })
+        self.page.dropdown_scroll_results.append({
+            "result": {
+                "scrolled": False,
+                "at_end": True,
+                "scroll_top": 100,
+                "scroll_height": 300,
+            },
+            "state": {"scrollTop": 100},
+        })
+        self.controller.open_dropdown(
+            role="combobox",
+            data_attributes={"data-slot": "select-trigger"},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "até o fim do dropdown"):
+            self.controller.select_option("Categoria inexistente")
+
+        self.assertFalse(hasattr(self.page, "scroll_script"))
+
+    def test_selection_requires_confirmation_on_trigger_after_scroll(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Escolha o ramo",
+            attributes={"role": "combobox", "data-slot": "select-trigger"},
+            on_click=lambda: setattr(self.page, "dropdown_closed", False),
+        )
+        option = FakeActionLocator(self.page, text="Barbearias")
+        self.page.attributes['button[data-slot="select-trigger"],[role="button"][data-slot="select-trigger"],select[data-slot="select-trigger"],[role=\'combobox\'][data-slot="select-trigger"]'] = trigger
+        self.page.roles[("option", "Barbearias")] = option
+        self.page.dropdown_menu_state.update({
+            "opened": True,
+            "options": ["Barbearias"],
+        })
+        self.controller.open_dropdown(
+            role="combobox",
+            data_attributes={"data-slot": "select-trigger"},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "não foi confirmada no controle"):
+            self.controller.select_option("Barbearias")
+
+        self.assertEqual(option.click_count, 1)
 
     def test_clicking_dropdown_text_can_be_confirmed_from_open_control(self):
         trigger = FakeActionLocator(
@@ -465,6 +663,10 @@ class BrowserActionTests(unittest.TestCase):
         )
         self.page.roles[("combobox", "Escolha o ramo")] = trigger
         self.page.roles[("option", "Restaurantes, padarias e lanchonetes")] = option
+        self.page.dropdown_menu_state.update({
+            "opened": True,
+            "options": ["Restaurantes, padarias e lanchonetes"],
+        })
         self.page.texts["Restaurantes, padarias e lanchonetes"] = option
 
         self.controller.open_dropdown("Escolha o ramo")
@@ -494,6 +696,10 @@ class BrowserActionTests(unittest.TestCase):
         )
         self.page.roles[("combobox", "Escolha o ramo")] = trigger
         self.page.roles[("option", "Restaurantes, padarias e lanchonetes")] = option
+        self.page.dropdown_menu_state.update({
+            "opened": True,
+            "options": ["Restaurantes, padarias e lanchonetes"],
+        })
 
         self.controller.open_dropdown("Escolha o ramo")
         with self.assertRaisesRegex(RuntimeError, "não foi confirmada no controle"):
@@ -529,8 +735,12 @@ class BrowserActionTests(unittest.TestCase):
         self.page.roles[("option", "Inexistente")] = option
         self.page.texts["Inexistente"] = FakeActionLocator(self.page, visible=False)
         self.controller.open_dropdown("Categoria")
+        self.page.dropdown_menu_state.update({
+            "opened": True,
+            "options": [],
+        })
 
-        with self.assertRaisesRegex(RuntimeError, "não encontrado"):
+        with self.assertRaisesRegex(RuntimeError, "container rolável"):
             self.controller.select_option("Inexistente")
 
     def test_ambiguous_button_is_rejected(self):

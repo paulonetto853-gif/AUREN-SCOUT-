@@ -99,7 +99,7 @@ Para validar no Edge V2 a seleção real da categoria recebida, sem iniciar uma 
 .\dist\AurenScout-V2.exe browser-test-category --category "Restaurantes, padarias e lanchonetes"
 ```
 
-O comando conecta ao CDP V2, exige que a aba ativa seja reconhecida como AIVIO e chama a mesma rotina de seleção usada por `SEARCH_LEADS`: abre o combobox “Escolha o ramo”, aguarda a opção exata, seleciona-a e confirma o texto no controle. A categoria vem de `--category`; o comando não clica em “Buscar” nem consome créditos. O resultado JSON informa conexão, reconhecimento do AIVIO e confirmação da categoria; em caso de falha, retorna código de saída diferente de zero.
+O comando conecta ao CDP V2, exige que a aba ativa seja reconhecida como AIVIO e chama a mesma rotina de seleção usada por `SEARCH_LEADS`: localiza o combobox por `role="combobox"`/`data-slot="select-trigger"` independentemente do texto atual, abre o dropdown e percorre as opções rolando somente o container do próprio menu até encontrar a categoria recebida em `--category` ou chegar ao fim/limite seguro. A seleção só é confirmada quando o controle mostra a categoria recebida. O comando não digita para pesquisar, não clica em “Buscar” e não consome créditos. O resultado JSON informa conexão, reconhecimento do AIVIO e confirmação da categoria; em caso de falha, retorna código de saída diferente de zero.
 
 Para testar o autocomplete de cidade da V2 sem selecionar uma sugestão ou iniciar uma busca:
 
