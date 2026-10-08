@@ -59,7 +59,11 @@ class FakeBrowser:
 
 class FakePlaywright:
     def __init__(self, browser):
-        self.chromium = type("Chromium", (), {"connect_over_cdp": lambda _, endpoint: browser})()
+        self.chromium = type(
+            "Chromium",
+            (),
+            {"connect_over_cdp": lambda _, endpoint, **kwargs: browser},
+        )()
         self.stopped = False
 
     def stop(self):
@@ -108,6 +112,20 @@ class BrowserControllerTests(unittest.TestCase):
         self.controller.disconnect()
         self.assertTrue(self.playwright.stopped)
         self.assertTrue(self.browser.connected)
+
+    def test_reconnect_stops_stale_playwright_after_edge_disconnects(self):
+        self.connect()
+        old_playwright = self.playwright
+        self.browser.connected = False
+        replacement_browser = FakeBrowser("Edg/131.0.0.0", [self.active_page])
+        replacement_playwright = FakePlaywright(replacement_browser)
+        self.manager.playwright = replacement_playwright
+
+        with patch("scout.browser_controller.sync_playwright", return_value=self.manager):
+            self.controller.connect()
+
+        self.assertTrue(old_playwright.stopped)
+        self.assertIs(self.controller._browser, replacement_browser)
 
     def test_navigation_only_navigates_the_active_tab(self):
         self.connect()

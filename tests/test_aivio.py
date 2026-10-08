@@ -1,10 +1,13 @@
 import unittest
+import re
 
 from scout.aivio import (
     AivioIntegration,
     CITY_INPUTS_SCRIPT,
     DETAIL_LINKS_SCRIPT,
+    GENERATION_ACTIONS_SCRIPT,
     PAGE_TEXT_SCRIPT,
+    PAGINATION_BUTTONS_SCRIPT,
     SEARCH_RESULTS_SCRIPT,
 )
 
@@ -16,6 +19,7 @@ class FakeLocator:
         self.click_action = click_action
         self.filled = None
         self.clicked = False
+        self.fills = {}
 
     @property
     def first(self):
@@ -30,6 +34,10 @@ class FakeLocator:
 
     def fill(self, value):
         self.filled = value
+        self.fills[getattr(self, "index", 0)] = value
+
+    def select_option(self, *, label):
+        self.selected_label = label
 
     def click(self):
         self.clicked = True
@@ -48,11 +56,27 @@ class FakePage:
         self.body_text = "Pesquisa de empresas"
         self.city_input = FakeLocator(items=[{
             "index": 0,
+            "tagName": "INPUT",
             "visible": True,
             "disabled": False,
             "descriptors": "cidade",
+        }, {
+            "index": 1,
+            "tagName": "INPUT",
+            "visible": True,
+            "disabled": False,
+            "descriptors": "estado uf",
+        }, {
+            "index": 2,
+            "tagName": "INPUT",
+            "visible": True,
+            "disabled": False,
+            "descriptors": "categoria segmento",
         }])
         self.search_button = FakeLocator(click_action=self._complete_search)
+        self.generation_button = FakeLocator(click_action=self._complete_generation)
+        self.next_button = FakeLocator(click_action=self._complete_next_page)
+        self.pagination_buttons = []
         self.search_results = [{
             "title": "Restaurante Exemplo",
             "text": "Restaurante Exemplo\nCentro, Porto Alegre",
@@ -66,7 +90,10 @@ class FakePage:
         return self._title
 
     def locator(self, selector):
-        if selector != 'input:not([type="hidden"]), textarea':
+        if selector not in {
+            'input:not([type="hidden"]), textarea',
+            'input:not([type="hidden"]), textarea, select',
+        }:
             raise AssertionError(f"unexpected selector: {selector}")
         return self.city_input
 
@@ -76,12 +103,28 @@ class FakePage:
         if script == SEARCH_RESULTS_SCRIPT:
             return self.search_results
         if script == DETAIL_LINKS_SCRIPT:
-            return self.detail_links
+            return list(self.detail_links)
+        if script == PAGINATION_BUTTONS_SCRIPT:
+            return self.pagination_buttons
+        if script == GENERATION_ACTIONS_SCRIPT:
+            return [{
+                "role": "button",
+                "visible": self.generation_button.visible,
+                "disabled": False,
+                "label": "Gerar site",
+            }]
+        if script.startswith("() => Array.from(document.querySelectorAll('button"):
+            return []
         raise AssertionError(f"unexpected page script: {script}")
 
     def get_by_role(self, role, name):
-        if role != "button":
+        if role not in {"button", "link"}:
             raise AssertionError(f"unexpected role: {role}")
+        if re.search(r"next|pr[oó]xima", name.pattern, re.I):
+            return self.next_button
+        if re.search(r"gerar|criar", name.pattern, re.I):
+            self.generation_button_name = name
+            return self.generation_button
         self.search_button_name = name
         return self.search_button
 
@@ -92,6 +135,8 @@ class FakePage:
 
     def wait_for_function(self, expression, **kwargs):
         self.waited_for_change = (expression, kwargs)
+        if getattr(self, "timeout_wait", False):
+            raise TimeoutError("condition timed out")
 
     def wait_for_load_state(self, state):
         self.waited_for_load = state
@@ -104,6 +149,19 @@ class FakePage:
 
     def _complete_search(self):
         self.body_text = "Resultados\nRestaurante Exemplo\nCentro, Porto Alegre"
+
+    def _complete_generation(self):
+        self.body_text += "\nSite gerado com sucesso"
+        self.detail_links.append({"title": "Site gerado", "url": "https://restaurante.aivio.site/"})
+
+    def _complete_next_page(self):
+        self.search_results = [{
+            "title": "Bistro Exemplo",
+            "text": "Bistro Exemplo\nPorto Alegre",
+            "url": "https://app.aivio.example/company/456",
+        }]
+        self.pagination_buttons = []
+        self.body_text += "\nBistro Exemplo"
 
 
 class FakeBrowserController:
@@ -140,6 +198,80 @@ class AivioIntegrationTests(unittest.TestCase):
             }],
             "companyDetails": None,
         })
+
+    def test_search_leads_applies_all_task_fields_and_normalizes_results(self):
+        result = self.integration.search_leads(
+            "Porto Alegre", "RS", "restaurantes", quantity=1,
+        )
+        self.assertEqual(
+            self.page.city_input.fills,
+            {0: "Porto Alegre", 1: "RS", 2: "restaurantes"},
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["results"][0]["company_name"], "Restaurante Exemplo")
+        self.assertEqual(result["results"][0]["city"], "Porto Alegre")
+
+    def test_search_city_supports_structured_v2_arguments_without_breaking_legacy(self):
+        result = self.integration.search_city(
+            "Porto Alegre", state="RS", category="restaurantes", quantity=1,
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["requested_quantity"], 1)
+        self.assertIsNone(result["companyDetails"])
+
+    def test_search_leads_paginates_until_requested_quantity(self):
+        self.page.pagination_buttons = [{
+            "index": 0, "visible": True, "disabled": False, "label": "Next",
+        }]
+        result = self.integration.search_leads("Porto Alegre", "RS", "restaurantes", quantity=2)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertTrue(self.page.next_button.clicked)
+        self.assertEqual(result["status"], "completed")
+
+    def test_open_company_updates_lead_with_page_observations(self):
+        from scout.v2_models import V2Lead
+
+        lead = V2Lead(
+            company_name="Restaurante Exemplo",
+            city="Porto Alegre",
+            state="RS",
+            company_url="https://app.aivio.example/company/123",
+        )
+        updated = self.integration.open_company(lead)
+        self.assertEqual(updated.phone, "+555100000000")
+        self.assertEqual(updated.address, "Rua Central, 10")
+        self.assertEqual(updated.website, "https://example.invalid/")
+        self.assertEqual(updated.company_url, "https://app.aivio.example/company/123")
+
+    def test_generate_site_waits_for_a_success_signal_and_returns_artifact(self):
+        from scout.v2_models import V2Lead
+
+        lead = V2Lead(
+            company_name="Restaurante Exemplo",
+            city="Porto Alegre",
+            state="RS",
+            company_url="https://app.aivio.example/company/123",
+        )
+        updated, artifacts, warnings = self.integration.generate_site(lead)
+        self.assertEqual(updated.company_name, "Restaurante Exemplo")
+        self.assertEqual(artifacts, [{
+            "type": "website",
+            "url": "https://restaurante.aivio.site/",
+            "title": "Site gerado",
+        }])
+        self.assertEqual(warnings, [])
+        self.assertEqual(self.page.waited_for_change[1]["timeout"], 120_000)
+
+    def test_generate_site_propagates_condition_timeout(self):
+        from scout.v2_models import V2Lead
+
+        self.page.timeout_wait = True
+        lead = V2Lead(
+            company_name="Restaurante Exemplo",
+            company_url="https://app.aivio.example/company/123",
+        )
+        with self.assertRaisesRegex(TimeoutError, "condition timed out"):
+            self.integration.generate_site(lead)
 
     def test_open_first_company_reads_its_page_and_links(self):
         result = self.integration.search_city("Porto Alegre", open_first_company=True)

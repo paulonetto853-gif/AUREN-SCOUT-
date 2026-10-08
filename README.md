@@ -39,10 +39,10 @@ Gerar no Windows (o PyInstaller não faz cross-build):
 powershell -ExecutionPolicy Bypass -File .\scripts\build-exe.ps1
 ```
 
-O resultado é `dist\AurenScout.exe`. Executar:
+O resultado é `dist\AurenScout-V2.exe`. O nome separado evita sobrescrever um `AurenScout.exe` preexistente. Executar:
 
 ```powershell
-.\dist\AurenScout.exe
+.\dist\AurenScout-V2.exe
 ```
 
 O processo mantém a API local ativa até Ctrl+C. Verificar em outro PowerShell:
@@ -100,15 +100,47 @@ O script não cria túneis, não altera firewall e não autentica no AIVIO. O en
 
 ## Integração AIVIO (V2)
 
-Com Edge já aberto no perfil dedicado, login feito manualmente e a página AIVIO visível na aba ativa, a integração pode ser exercitada durante desenvolvimento:
+O V2 recebe tarefas explícitas do AUREN, usa a aba ativa do Edge via CDP local e devolve JSON padronizado. O login no AIVIO continua manual. O V2 não decide quando gerar site nem executa ações comerciais.
 
-```powershell
-python -m scout.aivio "Porto Alegre"
+Antes de executar tarefas, inicie o Edge CDP como descrito acima, abra o AIVIO na aba ativa e faça login manualmente. A pesquisa exige campos acessíveis de cidade, estado e categoria, e o perfil/ação de geração só é aberto quando solicitado na tarefa. Os nomes e URLs de leads são observações do AIVIO; campos não disponíveis permanecem `null`. A paginação usa controles visíveis com rótulos acessíveis reconhecíveis, e a geração usa apenas ações visíveis identificadas por seus rótulos acessíveis.
+
+### API de tarefas
+
+`POST /tasks` aceita `SEARCH_LEADS`, `OPEN_COMPANY`, `GENERATE_SITE` e `HEALTH_CHECK`. Todas as respostas contêm `task_id`, `type`, `status`, `data`, `leads`, `artifacts`, `errors`, `warnings`, `started_at` e `finished_at`.
+
+Exemplo `SEARCH_LEADS`:
+
+```json
+{
+  "task_id": "2c6b72b1-68a4-4a51-bf59-68aa96832ad5",
+  "type": "SEARCH_LEADS",
+  "payload": {
+    "city": "Porto Alegre",
+    "state": "RS",
+    "category": "restaurantes",
+    "quantity": 20,
+    "filters": {}
+  }
+}
 ```
 
-Ela usa exclusivamente `http://127.0.0.1:9222`; não abre o AIVIO nem tenta autenticar. Os controles são encontrados por rótulos/atributos semânticos de cidade e pelo texto do botão `Ver agora`. O resultado estruturado contém a cidade, título/texto/link dos cards ou links visíveis encontrados e, somente com `--open-first-company`, título, URL, texto visível e links internos da primeira página de empresa. A navegação de perfil só aceita links HTTP(S) da mesma origem da página AIVIO.
+`quantity` aceita 1–100. `filters.has_website` é opcional; resultados sem evidência explícita de site não são tratados como empresas sem site. Filtros desconhecidos são indicados em `warnings`, não aplicados silenciosamente.
 
-Como ainda não há contrato DOM/URL do AIVIO no projeto, a leitura é baseada em heurísticas genéricas de acessibilidade e estrutura HTML; confirme os seletores contra a página real. Não há filtro por site, nota ou avaliações.
+Exemplos de execução local (substitua o lead de `OPEN_COMPANY`/`GENERATE_SITE` por um lead observado no AIVIO):
+
+```powershell
+python -m scout task SEARCH_LEADS --payload '{"city":"Porto Alegre","state":"RS","category":"restaurantes","quantity":20,"filters":{}}'
+python -m scout task OPEN_COMPANY --payload '{"lead":{"company_name":"Restaurante Exemplo","city":"Porto Alegre","state":"RS","company_url":"https://app.aivio.example/company/123"}}'
+python -m scout task GENERATE_SITE --payload '{"lead":{"company_name":"Restaurante Exemplo","city":"Porto Alegre","state":"RS","company_url":"https://app.aivio.example/company/123"}}'
+```
+
+O comando `HEALTH_CHECK` pode ser executado via `/tasks`; `GET /health` também inclui `browser_connected`, `active_tab` e `aivio_available`. O fechamento do Edge/AIVIO é reportado como indisponibilidade e não derruba a API.
+
+Para executar uma tarefa via HTTP, envie o objeto JSON acima a `http://127.0.0.1:8080/tasks`. Os erros de execução retornam um resultado com `status: "failed"` e descrição em `errors`; uma busca que não alcance a quantidade pedida retorna `partial`.
+
+`SCOUT_AIVIO_GENERATION_TIMEOUT_MS` controla o timeout de espera por um sinal de conclusão (padrão 120000 ms; intervalo permitido de 1000 a 600000). A geração retorna artefatos observados como website ou URL PDF; um caminho local só será informado quando realmente disponível.
+
+Como o AIVIO não fornece neste repositório um contrato estável de DOM/URL, a interação usa rótulos acessíveis e estrutura HTML visível. A geração não foi validada contra uma sessão AIVIO real neste ambiente: se o controle acessível ou o sinal de sucesso não for reconhecido, a tarefa falha explicitamente ou retorna aviso, em vez de inventar um resultado.
 
 ## Configuração
 
@@ -118,7 +150,8 @@ Como ainda não há contrato DOM/URL do AIVIO no projeto, a leitura é baseada e
 | `SCOUT_HOST` | `127.0.0.1` | A API só aceita o loopback `127.0.0.1`. |
 | `SCOUT_PORT` | `8080` | Porta HTTP. |
 | `SCOUT_LOG_LEVEL` | `INFO` | Nível de log. |
-| `SCOUT_CDP_ENDPOINT` | (não configurado) | URL HTTP(S) do endpoint CDP do Edge que o usuário disponibilizou. |
+| `SCOUT_CDP_ENDPOINT` | `http://127.0.0.1:9222` no executor V2 | Endpoint local do Edge disponibilizado pelo usuário; comandos avulsos `browser-*` mantêm a exigência de configuração explícita. |
+| `SCOUT_AIVIO_GENERATION_TIMEOUT_MS` | `120000` | Timeout da espera condicional da geração do site (1000–600000 ms). |
 
 O Browser Controller valida que o endpoint fala com Microsoft Edge e não armazena credenciais, cookies ou tokens. Não configure credenciais na URL do endpoint.
 
@@ -142,6 +175,10 @@ Entrada:
 ### `GET /scout/lead/:id`
 
 Retorna o registro completo que foi armazenado durante a execução atual do processo. `GET /health` verifica a disponibilidade da API.
+
+### `POST /tasks`
+
+Executa uma tarefa V2 estruturada. Os tipos aceitos são `SEARCH_LEADS`, `OPEN_COMPANY`, `GENERATE_SITE` e `HEALTH_CHECK`. A rota é adicional; `/scout/search` e `/scout/lead/:id` permanecem disponíveis com seus contratos atuais.
 
 Exemplo de consulta:
 
@@ -192,6 +229,15 @@ python -m unittest discover -s tests -p "test_aivio_live.py" -v
 
 Acrescente `$env:AIVIO_OPEN_FIRST_COMPANY = "1"` para autorizar explicitamente a abertura do primeiro perfil encontrado.
 
+Para executar uma tarefa V2 real específica, configure `SCOUT_AIVIO_LIVE_TASK` e `SCOUT_AIVIO_LIVE_PAYLOAD` e habilite `SCOUT_AIVIO_LIVE_TEST=1`. Use um lead obtido do AIVIO para `OPEN_COMPANY` e `GENERATE_SITE`; para permitir a geração com efeito externo, configure também `SCOUT_AIVIO_LIVE_ALLOW_GENERATE=1`. O teste continua opt-in e não usa AIVIO real na suíte normal:
+
+```powershell
+$env:SCOUT_AIVIO_LIVE_TEST = "1"
+$env:SCOUT_AIVIO_LIVE_TASK = "SEARCH_LEADS"
+$env:SCOUT_AIVIO_LIVE_PAYLOAD = '{"city":"Porto Alegre","state":"RS","category":"restaurantes","quantity":5,"filters":{}}'
+python -m unittest discover -s tests -p "test_aivio_live.py" -v
+```
+
 O teste de integração real executa o mesmo fluxo e fica ignorado quando `SCOUT_CDP_ENDPOINT` não está configurado:
 
 ```sh
@@ -200,13 +246,14 @@ SCOUT_CDP_ENDPOINT=http://127.0.0.1:9222 python3 -m unittest discover -s tests -
 
 ## Limitações
 
-- A busca disponível é um catálogo sintético para demonstração, não uma pesquisa na internet. Não produz leads reais nem afirma que empresas demonstrativas existem.
+- `/scout/search` continua usando o catálogo sintético para demonstração. A busca real do AIVIO existe somente no executor de tarefas V2 (`/tasks` ou `python -m scout task SEARCH_LEADS`).
+- A estrutura DOM, os campos de pesquisa, paginação e os rótulos de geração dependem da interface atual do AIVIO; não foi possível confirmar os seletores em uma sessão real neste ambiente. Execute os testes live opt-in no Edge local antes de depender operacionalmente desses fluxos.
 - Não há integração com buscadores, Google Maps, redes sociais ou bases de avaliações.
 - A auditoria analisa somente o HTML inicial, respeita `robots.txt`, limita o download a 1 MB e não executa JavaScript. Um site pode bloquear a análise; nesse caso, os dados ficam não verificados ou a análise é marcada como bloqueada.
 - Compatibilidade mobile é estimada pela presença de `meta viewport`. Performance é tempo de resposta/download, não um resultado de Lighthouse. Aparência visual permanece não verificada sem navegador.
 - Campos não observados, como avaliações, endereço, telefone e Instagram, não são preenchidos por inferência.
 - Armazenamento é em memória e se perde ao reiniciar. A API não tem autenticação; mantenha-a em interface confiável e não a exponha publicamente sem controles adicionais.
-- Não há dashboard, pesquisa externa, persistência durável ou coleta de métricas Google.
+- Não há dashboard, persistência durável ou coleta de métricas Google.
 
 ## Integração futura
 

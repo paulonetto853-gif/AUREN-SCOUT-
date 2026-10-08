@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 if ($env:OS -ne 'Windows_NT') {
-    throw 'O PyInstaller deve ser executado no Windows para gerar dist/AurenScout.exe. Builds nao sao cross-platform.'
+    throw 'O PyInstaller deve ser executado no Windows para gerar dist/AurenScout-V2.exe. Builds nao sao cross-platform.'
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -23,7 +23,7 @@ try {
         --clean `
         --onefile `
         --console `
-        --name AurenScout `
+        --name AurenScout-V2 `
         --distpath dist `
         --workpath build/pyinstaller `
         --specpath build/pyinstaller `
@@ -34,7 +34,7 @@ try {
         throw 'PyInstaller falhou ao empacotar o Scout.'
     }
 
-    $executable = Join-Path $repoRoot 'dist\AurenScout.exe'
+    $executable = Join-Path $repoRoot 'dist\AurenScout-V2.exe'
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
         throw "Build terminou sem gerar o executavel esperado: $executable"
     }

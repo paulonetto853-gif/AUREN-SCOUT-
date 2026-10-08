@@ -33,7 +33,7 @@ class PackagingTests(unittest.TestCase):
                 "--onefile",
                 "--console",
                 "--name",
-                "AurenScout",
+                "AurenScout-V2",
                 "--distpath",
                 str(output_dir),
                 "--workpath",
@@ -56,7 +56,7 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
 
             suffix = ".exe" if os.name == "nt" else ""
-            executable = output_dir / f"AurenScout{suffix}"
+            executable = output_dir / f"AurenScout-V2{suffix}"
             self.assertTrue(executable.is_file(), msg="PyInstaller nao criou o executavel")
             self.assertGreater(executable.stat().st_size, 0)
 

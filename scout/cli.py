@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import uuid
 
 from playwright.sync_api import Error as PlaywrightError
 
@@ -9,6 +10,8 @@ from scout.api import create_server
 from scout.browser_controller import BrowserController
 from scout.discovery import MockSearchProvider
 from scout.service import ScoutService
+from scout.task_executor import TaskExecutor
+from scout.v2_models import TaskStatus, TaskType
 
 
 def main() -> None:
@@ -20,6 +23,10 @@ def main() -> None:
     commands.add_parser("browser-status", help="consultar o estado do Edge conectado por CDP")
     navigate = commands.add_parser("browser-navigate", help="navegar a aba ativa para uma URL autorizada")
     navigate.add_argument("url")
+    task = commands.add_parser("task", help="executar uma tarefa V2 do AUREN no AIVIO")
+    task.add_argument("type", choices=[task_type.value for task_type in TaskType])
+    task.add_argument("--payload", required=True, help="objeto JSON com os dados da tarefa")
+    task.add_argument("--task-id", default=None, help="UUID opcional da tarefa")
     args = parser.parse_args()
 
     if args.command is None:
@@ -39,6 +46,23 @@ def main() -> None:
             parser.error(str(error))
         finally:
             controller.disconnect()
+        return
+    if args.command == "task":
+        try:
+            payload = json.loads(args.payload)
+            if not isinstance(payload, dict):
+                raise ValueError("--payload deve conter um objeto JSON")
+            task_request = {
+                "task_id": args.task_id or str(uuid.uuid4()),
+                "type": args.type,
+                "payload": payload,
+            }
+            result = TaskExecutor().execute(task_request)
+        except (ValueError, json.JSONDecodeError) as error:
+            parser.error(str(error))
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        if result.status == TaskStatus.FAILED:
+            raise SystemExit(1)
         return
 
     provider = os.getenv("SCOUT_PROVIDER", "mock").casefold()
