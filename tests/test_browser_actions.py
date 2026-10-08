@@ -114,6 +114,13 @@ class FakeActionLocator:
             return "select" if self.kind == "native" else self.tag
         if "Array.from(element.labels" in script:
             return self.attributes.get("label", "")
+        if script.startswith("element => ({") and "expanded:" in script:
+            return {
+                "text": self.text,
+                "expanded": "false" if self.page.dropdown_closed else "true",
+                "value": self.value if self.kind == "native" else None,
+                "valueText": self.attributes.get("aria-valuetext"),
+            }
         if script.startswith("element => ({"):
             return {
                 "tag": self.tag,
@@ -439,6 +446,38 @@ class BrowserActionTests(unittest.TestCase):
 
         self.assertEqual(result, {"opened": True, "kind": "custom"})
         self.assertEqual(trigger.click_count, 1)
+
+    def test_clicking_dropdown_text_can_be_confirmed_from_open_control(self):
+        trigger = FakeActionLocator(
+            self.page,
+            kind="custom",
+            text="Escolha o ramo",
+            attributes={"role": "combobox"},
+            on_click=lambda: setattr(self.page, "dropdown_closed", False),
+        )
+        option = FakeActionLocator(
+            self.page,
+            text="Restaurantes, padarias e lanchonetes",
+            on_click=lambda: (
+                setattr(trigger, "text", "Restaurantes, padarias e lanchonetes"),
+                setattr(self.page, "dropdown_closed", True),
+            ),
+        )
+        self.page.roles[("combobox", "Escolha o ramo")] = trigger
+        self.page.roles[("option", "Restaurantes, padarias e lanchonetes")] = option
+        self.page.texts["Restaurantes, padarias e lanchonetes"] = option
+
+        self.controller.open_dropdown("Escolha o ramo")
+        self.assertEqual(self.controller.read_dropdown_state()["text"], "Escolha o ramo")
+        self.controller.wait_for_element(
+            role="option",
+            accessible_name="Restaurantes, padarias e lanchonetes",
+        )
+        self.controller.click_text("Restaurantes, padarias e lanchonetes")
+        state = self.controller.read_dropdown_state()
+
+        self.assertEqual(state["text"], "Restaurantes, padarias e lanchonetes")
+        self.assertEqual(state["expanded"], "false")
 
     def test_custom_dropdown_selection_requires_selected_text_on_trigger(self):
         trigger = FakeActionLocator(

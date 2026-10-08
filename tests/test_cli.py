@@ -154,6 +154,70 @@ class CliTests(unittest.TestCase):
         controller.return_value.inspectCategoryDropdown.assert_called_once_with()
         controller.return_value.navigate.assert_not_called()
 
+    def test_browser_test_category_uses_aivio_category_selection_without_search(self):
+        category = "Restaurantes, padarias e lanchonetes"
+        with (
+            patch.object(
+                sys, "argv",
+                ["AurenScout-V2.exe", "browser-test-category", "--category", category],
+            ),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("scout.cli.AivioIntegration") as integration,
+            patch("builtins.print") as print_output,
+        ):
+            integration.return_value.select_category.return_value = {
+                "aivio": True,
+                "category": category,
+                "combobox_found": True,
+                "click_performed": True,
+                "dropdown_open": True,
+                "option_found": True,
+                "option_clicked": True,
+                "category_confirmed": True,
+            }
+            main()
+
+        output = json.loads(print_output.call_args.args[0])
+        self.assertTrue(output["connected"])
+        self.assertTrue(output["aivio"])
+        self.assertEqual(output["category"], category)
+        self.assertTrue(output["combobox_found"])
+        self.assertTrue(output["click_performed"])
+        self.assertTrue(output["dropdown_open"])
+        self.assertTrue(output["option_found"])
+        self.assertTrue(output["option_clicked"])
+        self.assertTrue(output["category_confirmed"])
+        controller.assert_called_once_with(cdp_endpoint=CDP_ENDPOINT)
+        controller.return_value.connect.assert_called_once_with()
+        controller.return_value.disconnect.assert_called_once_with()
+        integration.assert_called_once_with(controller.return_value)
+        integration.return_value.select_category.assert_called_once_with(category)
+        controller.return_value.inspectCategoryDropdown.assert_not_called()
+        controller.return_value.click_button.assert_not_called()
+
+    def test_browser_test_category_rejects_empty_category_argument(self):
+        with (
+            patch.object(
+                sys, "argv",
+                ["AurenScout-V2.exe", "browser-test-category", "--category", "   "],
+            ),
+            patch.dict(os.environ, {}, clear=True),
+            patch("scout.cli.BrowserController") as controller,
+            patch("scout.cli.AivioIntegration") as integration,
+            patch("builtins.print") as print_output,
+            self.assertRaises(SystemExit) as context,
+        ):
+            integration.return_value.select_category.side_effect = ValueError(
+                "Informe uma categoria para selecionar"
+            )
+            main()
+
+        self.assertEqual(context.exception.code, 1)
+        self.assertFalse(json.loads(print_output.call_args.args[0])["category_confirmed"])
+        integration.return_value.select_category.assert_called_once_with("   ")
+        controller.return_value.click_button.assert_not_called()
+
     def test_browser_test_city_uses_the_requested_city_exactly(self):
         for city in ("Porto Alegre", "Canoas", "Caxias do Sul"):
             with self.subTest(city=city):

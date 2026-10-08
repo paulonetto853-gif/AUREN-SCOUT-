@@ -93,6 +93,14 @@ Para inspecionar os atributos dos campos e abrir apenas o dropdown “Escolha o 
 
 O comando retorna os inputs visíveis e seus atributos/labels e compara os elementos DOM antes/depois de abrir o dropdown. A única interação é clicar exatamente uma vez no botão único “Escolha o ramo”; não preenche campos nem seleciona opções. Ele não valida a seleção de categoria no Edge real.
 
+Para validar no Edge V2 a seleção real da categoria recebida, sem iniciar uma pesquisa:
+
+```powershell
+.\dist\AurenScout-V2.exe browser-test-category --category "Restaurantes, padarias e lanchonetes"
+```
+
+O comando conecta ao CDP V2, exige que a aba ativa seja reconhecida como AIVIO e chama a mesma rotina de seleção usada por `SEARCH_LEADS`: abre o combobox “Escolha o ramo”, aguarda a opção exata, seleciona-a e confirma o texto no controle. A categoria vem de `--category`; o comando não clica em “Buscar” nem consome créditos. O resultado JSON informa conexão, reconhecimento do AIVIO e confirmação da categoria; em caso de falha, retorna código de saída diferente de zero.
+
 Para testar o autocomplete de cidade da V2 sem selecionar uma sugestão ou iniciar uma busca:
 
 ```powershell

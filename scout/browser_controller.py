@@ -1124,6 +1124,19 @@ class BrowserController:
         self._open_dropdown_kind = None
         return {"selected": True, "value_changed": trigger_changed}
 
+    def read_dropdown_state(self) -> dict[str, str | None]:
+        if self._open_dropdown is None or self._open_dropdown_kind is None:
+            raise RuntimeError("Abra explicitamente um dropdown antes de ler seu estado")
+        state = self._open_dropdown.evaluate(
+            """element => ({
+              text: (element.innerText || element.textContent || '').trim(),
+              expanded: element.getAttribute('aria-expanded'),
+              value: 'value' in element ? element.value : null,
+              valueText: element.getAttribute('aria-valuetext')
+            })"""
+        )
+        return state
+
     def wait_for_element(
         self,
         *,

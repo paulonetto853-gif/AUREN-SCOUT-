@@ -128,6 +128,15 @@ class FakeBrowserController:
 
     def click_text(self, text):
         self.operations.append(("click_text", text))
+        if self.category_menu_open:
+            matches = [option for option in self.category_options if option == text]
+            if not matches:
+                raise RuntimeError(f"Elemento não encontrado: opção {text}")
+            if len(matches) > 1:
+                raise ValueError(f"Alvo ambíguo para opção {text}")
+            self.selected_category = matches[0]
+            self.category_menu_open = False
+            return {"clicked": True, "page_changed": False}
         matches = [suggestion for suggestion in self.suggestions if suggestion == text]
         if not matches:
             raise RuntimeError(f"Elemento não encontrado: sugestão {text}")
@@ -153,6 +162,10 @@ class FakeBrowserController:
         self.selected_category = matches[0]
         self.category_menu_open = False
         return {"selected": True, "value_changed": True}
+
+    def read_dropdown_state(self):
+        self.operations.append(("read_dropdown_state",))
+        return {"text": self.selected_category, "expanded": str(self.category_menu_open).lower()}
 
     def capture_page_state(self):
         return {"url": self.page.url, "text_hash": str(self.page_index)}
@@ -232,7 +245,7 @@ class AivioIntegrationTests(unittest.TestCase):
         self.assertEqual(self.controller.selected_city, "Porto Alegre")
         self.assertIn(("open_dropdown", "Escolha o ramo", {}), self.controller.operations)
         self.assertIn(("wait_for_element", "option", "restaurantes", 5_000), self.controller.operations)
-        self.assertIn(("select_option", "restaurantes"), self.controller.operations)
+        self.assertIn(("click_text", "restaurantes"), self.controller.operations)
         self.assertEqual(self.controller.selected_category, "restaurantes")
         self.assertIn(("click_button", "Buscar"), self.controller.operations)
         operations = [item[0] for item in self.controller.operations]
@@ -240,9 +253,49 @@ class AivioIntegrationTests(unittest.TestCase):
         self.assertLess(operations.index("fill"), operations.index("wait_for_element"))
         self.assertLess(operations.index("wait_for_element"), operations.index("click_text"))
         self.assertLess(operations.index("click_text"), operations.index("open_dropdown"))
-        self.assertLess(operations.index("select_option"), operations.index("click_button"))
+        self.assertLess(
+            operations.index("wait_for_element", operations.index("open_dropdown")),
+            operations.index("click_text", operations.index("open_dropdown")),
+        )
+        self.assertLess(
+            operations.index("click_text", operations.index("open_dropdown")),
+            operations.index("read_dropdown_state"),
+        )
+        self.assertLess(operations.index("read_dropdown_state"), operations.index("click_button"))
         self.assertNotIn(("read_inputs",), self.controller.operations)
         self.assertTrue(any(item[0] == "wait_for_page_change" for item in self.controller.operations))
+
+    def test_select_category_uses_shared_dropdown_logic_without_search(self):
+        category = "Restaurantes, padarias e lanchonetes"
+
+        result = self.integration.select_category(category)
+
+        self.assertEqual(result["category"], category)
+        self.assertTrue(result["aivio"])
+        self.assertTrue(result["combobox_found"])
+        self.assertTrue(result["click_performed"])
+        self.assertTrue(result["dropdown_open"])
+        self.assertTrue(result["option_found"])
+        self.assertTrue(result["option_clicked"])
+        self.assertTrue(result["category_confirmed"])
+        self.assertEqual(self.controller.selected_category, category)
+        operations = [operation[0] for operation in self.controller.operations]
+        self.assertLess(operations.index("open_dropdown"), operations.index("wait_for_element"))
+        self.assertLess(operations.index("wait_for_element"), operations.index("click_text"))
+        self.assertLess(operations.index("click_text"), operations.index("read_dropdown_state"))
+        self.assertIn(("click_text", category), self.controller.operations)
+        self.assertFalse(any(item[0] == "select_option" for item in self.controller.operations))
+        self.assertFalse(any(item[0] == "click_button" for item in self.controller.operations))
+
+    def test_select_category_requires_aivio_page(self):
+        self.controller.page.url = "https://example.com/"
+        self.controller.page._title = "Example"
+
+        with self.assertRaisesRegex(RuntimeError, "não foi reconhecida como AIVIO"):
+            self.integration.select_category("Barbearias")
+
+        self.assertFalse(any(item[0] == "open_dropdown" for item in self.controller.operations))
+        self.assertFalse(any(item[0] == "click_button" for item in self.controller.operations))
 
     def test_search_passes_each_requested_city_to_the_autocomplete_unchanged(self):
         for city in ("Porto Alegre", "Canoas", "Caxias do Sul"):
@@ -313,9 +366,10 @@ class AivioIntegrationTests(unittest.TestCase):
         )
         self.assertLess(
             operations.index("wait_for_element", operations.index("open_dropdown")),
-            operations.index("select_option"),
+            operations.index("click_text", operations.index("open_dropdown")),
         )
         self.assertFalse(any(item[0] == "click_button" for item in self.controller.operations))
+        self.assertFalse(any(item[0] == "select_option" for item in self.controller.operations))
 
     def test_category_dropdown_rejects_missing_or_ambiguous_requested_option(self):
         for options, error in (

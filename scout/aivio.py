@@ -269,6 +269,18 @@ class AivioIntegration:
             "aivio_error": None if aivio_available else "A aba ativa não está em um hostname AIVIO.",
         }
 
+    def select_category(self, category: str) -> dict[str, Any]:
+        if not isinstance(category, str) or not category.strip():
+            raise ValueError("Informe uma categoria para selecionar")
+        self._require_aivio_page()
+        selected_category = category.strip()
+        steps = self._select_category(selected_category)
+        return {
+            "aivio": True,
+            "category": selected_category,
+            **steps,
+        }
+
     def _fill_search_fields(self, fields: dict[str, str]) -> None:
         buttons = self.browser_controller.read_buttons()
         self._require_unique_button(buttons, "Escolha o ramo")
@@ -277,16 +289,46 @@ class AivioIntegration:
             raise RuntimeError('Botão "Buscar" (ou legado "Ver agora") não encontrado no AIVIO')
 
         self._select_city(fields["city"])
+        self._select_category(fields["category"])
+
+    def _select_category(self, category: str) -> dict[str, bool]:
+        if not isinstance(category, str) or not category.strip():
+            raise ValueError("Informe uma categoria para selecionar")
+        category = category.strip()
+        steps = {
+            "combobox_found": False,
+            "click_performed": False,
+            "dropdown_open": False,
+            "option_found": False,
+            "option_clicked": False,
+            "category_confirmed": False,
+        }
         self.browser_controller.open_dropdown("Escolha o ramo")
-        category = fields["category"].strip()
+        steps["combobox_found"] = True
+        steps["click_performed"] = True
         self.browser_controller.wait_for_element(
             role="option",
             accessible_name=category,
             timeout_ms=5_000,
         )
-        selection = self.browser_controller.select_option(category)
-        if not selection.get("selected"):
+        steps["dropdown_open"] = True
+        steps["option_found"] = True
+        self.browser_controller.click_text(category)
+        steps["option_clicked"] = True
+        dropdown_state = self.browser_controller.read_dropdown_state()
+        selected_values = (
+            dropdown_state.get("text"),
+            dropdown_state.get("value"),
+            dropdown_state.get("valueText"),
+        )
+        if not any(
+            isinstance(value, str)
+            and " ".join(value.split()).casefold() == " ".join(category.split()).casefold()
+            for value in selected_values
+        ):
             raise RuntimeError(f"A categoria não foi confirmada no AIVIO: {category}")
+        steps["category_confirmed"] = True
+        return steps
 
     def _select_city(self, city: str) -> None:
         if not isinstance(city, str) or not city.strip():

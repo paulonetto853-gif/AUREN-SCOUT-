@@ -7,7 +7,7 @@ import uuid
 from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 
 from scout.api import create_server
-from scout.aivio import CDP_ENDPOINT
+from scout.aivio import AivioIntegration, CDP_ENDPOINT
 from scout.browser_controller import BrowserController
 from scout.discovery import MockSearchProvider
 from scout.service import ScoutService
@@ -32,6 +32,11 @@ def main() -> None:
         help="diagnosticar o autocomplete de cidade sem selecionar uma sugestão",
     )
     test_city.add_argument("--city", required=True, help="cidade exata a testar no autocomplete")
+    test_category = commands.add_parser(
+        "browser-test-category",
+        help="selecionar e confirmar uma categoria sem iniciar a busca",
+    )
+    test_category.add_argument("--category", required=True, help="categoria exata recebida do AUREN")
     navigate = commands.add_parser("browser-navigate", help="navegar a aba ativa para uma URL autorizada")
     navigate.add_argument("url")
     task = commands.add_parser("task", help="executar uma tarefa V2 do AUREN no AIVIO")
@@ -57,6 +62,7 @@ def main() -> None:
         "browser-inspect",
         "browser-inspect-category",
         "browser-test-city",
+        "browser-test-category",
         "browser-navigate",
     }:
         cdp_endpoint = os.getenv("SCOUT_CDP_ENDPOINT", CDP_ENDPOINT)
@@ -112,6 +118,38 @@ def main() -> None:
                 )
                 raise SystemExit(1)
             if not result["connected"] or not result["city_input_found"]:
+                raise SystemExit(1)
+            return
+        if args.command == "browser-test-category":
+            result = {
+                "connected": False,
+                "aivio": False,
+                "category": args.category,
+                "combobox_found": False,
+                "click_performed": False,
+                "dropdown_open": False,
+                "option_found": False,
+                "option_clicked": False,
+                "category_confirmed": False,
+                "error": None,
+            }
+            operation_error: Exception | None = None
+            try:
+                controller.connect()
+                result["connected"] = True
+                integration_result = AivioIntegration(controller).select_category(args.category)
+                result.update(integration_result)
+            except (PlaywrightError, RuntimeError, ValueError) as error:
+                operation_error = error
+                result["error"] = str(error)
+            finally:
+                controller.disconnect()
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if operation_error is not None or not result["category_confirmed"]:
+                logging.getLogger("scout.cli").error(
+                    "browser-test-category falhou (%s)",
+                    type(operation_error).__name__ if operation_error is not None else "selection",
+                )
                 raise SystemExit(1)
             return
         try:
