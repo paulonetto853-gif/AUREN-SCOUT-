@@ -1,11 +1,13 @@
 import unittest
 from pathlib import Path
 import tempfile
+import uuid
 from unittest.mock import patch
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from scout.browser_controller import BrowserController
+from scout.browser_operator import BrowserOperator, V2BrowserController
 
 
 class FakeActionLocator:
@@ -273,6 +275,15 @@ class FakeActionPage:
             return None
         if script.startswith("() => ({"):
             return {"title": self._title, "url": self.url, "text": self.text}
+        if script.startswith("() => {"):
+            return {
+                "title": self._title,
+                "url": self.url,
+                "text": self.text,
+                "inputs": [],
+                "buttons": [],
+                "links": [],
+            }
         raise AssertionError(f"unexpected page evaluation: {script}")
 
     def wait_for_function(self, expression, *, arg, timeout):
@@ -1037,6 +1048,88 @@ class BrowserActionTests(unittest.TestCase):
             file_input.attributes["uploaded_file"],
             expected_path,
         )
+
+
+class BrowserOperatorTests(unittest.TestCase):
+    def setUp(self):
+        self.page = FakeActionPage()
+        self.page.url = "https://example.test/start"
+        self.page._title = "Example app"
+        self.controller = V2BrowserController()
+        self.controller._browser = FakeBrowser(self.page)
+        self.operator = BrowserOperator(self.controller)
+
+    def test_global_task_navigates_locates_clicks_fills_reads_and_verifies(self):
+        button = FakeActionLocator(self.page, text="Continue")
+        textbox = FakeActionLocator(self.page, tag="input", value="")
+        self.page.roles[("button", "Continue")] = button
+        self.page.roles[("textbox", "Display name")] = textbox
+        self.page.labels["Display name"] = textbox
+
+        result = self.operator.execute({
+            "task_id": str(uuid.uuid4()),
+            "actions": [
+                {"action": "navigate", "url": "https://example.test/profile"},
+                {"action": "observe"},
+                {"action": "click", "target": {
+                    "role": "button", "accessible_name": "Continue",
+                }},
+                {"action": "fill", "target": {"label": "Display name"}, "value": "Ada"},
+                {"action": "read_text"},
+                {"action": "verify", "target": {"label": "Display name"}, "state": "filled"},
+            ],
+        })
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(result["operations"]), 6)
+        self.assertEqual(result["operations"][0]["result"]["url"], "https://example.test/profile")
+        self.assertTrue(result["operations"][2]["result"]["clicked"])
+        self.assertNotEqual(
+            result["operations"][2]["evidence"]["after"]["state"],
+            result["operations"][2]["evidence"]["before"]["state"],
+        )
+        self.assertEqual(textbox.value, "Ada")
+        self.assertNotIn("Ada", str(result))
+        self.assertTrue(result["operations"][5]["result"]["verified"])
+        self.assertEqual(result["evidence"][0]["after"]["title"], "Example app")
+        self.assertEqual(result["evidence"][0]["after"]["url"], "https://example.test/profile")
+
+    def test_ambiguous_semantic_target_returns_structured_failure_without_clicking(self):
+        class AmbiguousLocator(FakeActionLocator):
+            def count(self):
+                return 2
+
+            def nth(self, index):
+                return FakeActionLocator(self.page, text="Open")
+
+        button = AmbiguousLocator(self.page, text="Open")
+        self.page.roles[("button", "Open")] = button
+        result = self.operator.execute({
+            "task_id": str(uuid.uuid4()),
+            "actions": [{
+                "action": "click",
+                "target": {"role": "button", "accessible_name": "Open"},
+            }],
+        })
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["code"], "operation_failed")
+        self.assertIn("ambíguo", result["error"]["message"])
+        self.assertEqual(result["operations"][0]["status"], "failed")
+        self.assertEqual(button.click_count, 0)
+
+    def test_operator_rejects_unsupported_business_specific_actions(self):
+        result = self.operator.execute({
+            "task_id": str(uuid.uuid4()),
+            "actions": [{"action": "search_leads"}],
+        })
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"]["code"], "invalid_task")
+
+    def test_v2_controller_refuses_the_v1_cdp_endpoint(self):
+        with self.assertRaisesRegex(ValueError, "somente"):
+            V2BrowserController("http://127.0.0.1:9222")
 
 
 if __name__ == "__main__":

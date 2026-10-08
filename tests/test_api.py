@@ -130,6 +130,60 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"], "invalid_task")
 
+    def test_operator_endpoint_accepts_generic_structured_task_and_stores_result(self):
+        class FakeOperatorExecutor:
+            def __init__(self):
+                self.result = None
+
+            def execute(self, task):
+                self.result = {
+                    "task_id": task["task_id"],
+                    "status": "completed",
+                    "action": {"index": 0, "name": "observe"},
+                    "result": [{"title": "Example"}],
+                    "evidence": [],
+                    "operations": [],
+                }
+                return self.result
+
+            def get_result(self, task_id):
+                if self.result and self.result["task_id"] == task_id:
+                    return self.result
+                return None
+
+        executor = FakeOperatorExecutor()
+        server = create_server(
+            ScoutService(MockSearchProvider()),
+            port=0,
+            operator_executor=executor,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        task_id = str(uuid.uuid4())
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_address[1]}/operator/tasks",
+                data=json.dumps({
+                    "task_id": task_id,
+                    "actions": [{"action": "observe"}],
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request) as response:
+                result = json.loads(response.read())
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["action"]["name"], "observe")
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_address[1]}/operator/tasks/{task_id}"
+            ) as response:
+                stored_result = json.loads(response.read())
+            self.assertEqual(stored_result["task_id"], task_id)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_task_timeout_is_not_returned_as_success(self):
         class TimeoutIntegration:
             def generate_site(self, lead, **kwargs):
